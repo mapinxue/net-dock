@@ -39,6 +39,17 @@ struct NetworkAdapter {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct AdapterOperationResult {
+    action: String,
+    requested_name: String,
+    before: Option<NetworkAdapter>,
+    after: Option<NetworkAdapter>,
+    changed: bool,
+    message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct DnsConfig {
     interface_alias: String,
     server_addresses: Vec<String>,
@@ -76,21 +87,13 @@ Get-NetAdapter |
 }
 
 #[tauri::command]
-fn enable_adapter(name: String) -> CommandResult<()> {
-    run_powershell(
-        "param($Name) Enable-NetAdapter -Name $Name -Confirm:$false",
-        &[name],
-    )?;
-    Ok(())
+fn enable_adapter(name: String) -> CommandResult<AdapterOperationResult> {
+    run_adapter_action(name, "enable")
 }
 
 #[tauri::command]
-fn disable_adapter(name: String) -> CommandResult<()> {
-    run_powershell(
-        "param($Name) Disable-NetAdapter -Name $Name -Confirm:$false",
-        &[name],
-    )?;
-    Ok(())
+fn disable_adapter(name: String) -> CommandResult<AdapterOperationResult> {
+    run_adapter_action(name, "disable")
 }
 
 #[tauri::command]
@@ -181,14 +184,67 @@ fn run_powershell_json(script: &str, args: &[String]) -> CommandResult<Value> {
     serde_json::from_str(&stdout).map_err(|error| NetDockError::Json(error.to_string()))
 }
 
+fn run_adapter_action(name: String, action: &str) -> CommandResult<AdapterOperationResult> {
+    let script = r#"
+param($Name, $Action)
+
+$Before = Get-NetAdapter -Name $Name -ErrorAction Stop |
+  Select-Object Name, InterfaceDescription, Status, MacAddress, LinkSpeed
+
+if ($Action -eq "enable") {
+  Enable-NetAdapter -Name $Name -Confirm:$false -ErrorAction Stop
+} elseif ($Action -eq "disable") {
+  Disable-NetAdapter -Name $Name -Confirm:$false -ErrorAction Stop
+} else {
+  throw "Unknown adapter action: $Action"
+}
+
+Start-Sleep -Milliseconds 700
+
+$After = Get-NetAdapter -Name $Name -ErrorAction Stop |
+  Select-Object Name, InterfaceDescription, Status, MacAddress, LinkSpeed
+
+[PSCustomObject]@{
+  Action = $Action
+  RequestedName = $Name
+  Before = $Before
+  After = $After
+  Changed = $Before.Status -ne $After.Status
+  Message = "Adapter '$Name' status: $($Before.Status) -> $($After.Status)"
+} | ConvertTo-Json -Depth 5
+"#;
+
+    let value = run_powershell_json(script, &[name, action.to_string()])?;
+    let before = value.get("Before").map(read_adapter).transpose()?;
+    let after = value.get("After").map(read_adapter).transpose()?;
+
+    Ok(AdapterOperationResult {
+        action: read_string(&value, "Action").unwrap_or_else(|| action.to_string()),
+        requested_name: read_string(&value, "RequestedName").unwrap_or_default(),
+        before,
+        after,
+        changed: value
+            .get("Changed")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        message: read_string(&value, "Message").unwrap_or_default(),
+    })
+}
+
 fn run_powershell(script: &str, args: &[String]) -> CommandResult<String> {
     let mut command = Command::new("powershell.exe");
+    let utf8_script = format!(
+        "[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); $OutputEncoding = [System.Text.UTF8Encoding]::new($false); $ErrorActionPreference = 'Stop'; & {{ {} }}",
+        script
+    );
+
     command
         .arg("-NoProfile")
+        .arg("-NonInteractive")
         .arg("-ExecutionPolicy")
         .arg("Bypass")
         .arg("-Command")
-        .arg(format!("& {{ {} }}", script));
+        .arg(utf8_script);
 
     for arg in args {
         command.arg(arg);
@@ -230,6 +286,16 @@ fn json_items(value: Value) -> Vec<Value> {
         Value::Null => vec![],
         item => vec![item],
     }
+}
+
+fn read_adapter(value: &Value) -> CommandResult<NetworkAdapter> {
+    Ok(NetworkAdapter {
+        name: read_string(value, "Name").unwrap_or_default(),
+        interface_description: read_string(value, "InterfaceDescription"),
+        status: read_string(value, "Status"),
+        mac_address: read_string(value, "MacAddress"),
+        link_speed: read_string(value, "LinkSpeed"),
+    })
 }
 
 fn read_string(value: &Value, key: &str) -> Option<String> {
