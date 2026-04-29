@@ -1,27 +1,54 @@
-# net-dock
+# Net Dock
 
-Windows network manager for adapters, DNS, and VPN.
+[简体中文](docs/README.zh-CN.md)
 
-用于管理 Windows 网卡切换、DNS 和 VPN 的 Tauri 桌面应用。
+Net Dock is a Windows desktop network utility built with Tauri. It focuses on day-to-day adapter switching, network status inspection, DNS control, and VPN operations.
 
-## 功能规划
+> Status: actively iterating. Some DNS and VPN workflows are still marked as WIP in the app.
 
-- 网卡：读取适配器状态，启用/禁用指定网卡。
-- DNS：读取 IPv4 DNS 配置，设置静态 DNS，恢复自动 DNS。
-- VPN：读取 Windows VPN 配置，连接/断开指定 VPN。
+![Net Dock screenshot](docs/screenshot.png)
 
-## 开发
+## Features
 
-本项目使用 Tauri v2、Vite 和 TypeScript。
+- View Windows network adapters with status, IPv4 address, and connection-specific DNS suffix.
+- Enable or disable adapters with an inline switch.
+- Rename adapters directly from each adapter card.
+- Auto-refresh adapter status during transient states such as `Disconnected`.
+- Manually refresh the current view from a floating refresh button.
+- Switch UI language between English and Simplified Chinese.
+- Read IPv4 DNS configuration.
+- Set static DNS servers or restore automatic DNS.
+- Read saved Windows VPN profiles.
+- Connect or disconnect saved VPN profiles.
+- Request administrator permission on launch for network operations.
+
+## Install
+
+Download the portable Windows zip from the GitHub Releases page, unzip it, and run `net-dock.exe`.
+
+Adapter, DNS, and VPN operations usually require administrator permission. Net Dock requests Windows UAC elevation when it starts.
+
+## Development
+
+This project uses Tauri v2, Vite, React, TypeScript, and Rust.
 
 ```powershell
 npm install
 npm run tauri dev
 ```
 
-如果本机还没有 Rust，请先安装 Rust 和 Tauri 的 Windows 依赖：
+Build a portable executable:
 
-- Rust: https://www.rust-lang.org/tools/install
-- Tauri prerequisites: https://tauri.app/start/prerequisites/
+```powershell
+npm run tauri -- build --no-bundle
+```
 
-部分网卡和 DNS 操作需要管理员权限运行应用。
+Build an installer when NSIS or WiX is available:
+
+```powershell
+npm run tauri -- build --bundles nsis
+```
+
+## Notes
+
+Net Dock currently uses PowerShell commands such as `Get-NetAdapter`, `Get-NetIPAddress`, `Get-DnsClient`, and `Rename-NetAdapter` behind the Tauri backend. The adapter status auto-refresh path uses a lighter status-only query to reduce refresh overhead.

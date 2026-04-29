@@ -10,12 +10,13 @@ import {
   Select,
   Separator,
   Spinner,
+  Switch,
   Tag,
   TagGroup,
   Tabs,
   toast,
 } from '@heroui/react'
-import { CheckCircle2, ChevronDown, Languages, Network, PlugZap, RefreshCw, Shield, Wifi, XCircle } from 'lucide-react'
+import { Check, ChevronDown, Languages, Network, Pencil, RefreshCw, Shield, Wifi, X } from 'lucide-react'
 import { useEffect, useState } from 'react'
 
 type Locale = 'zh' | 'en'
@@ -26,6 +27,13 @@ type Adapter = {
   status?: string
   macAddress?: string
   linkSpeed?: string
+  ipAddresses: string[]
+  connectionSpecificSuffix?: string
+}
+
+type AdapterStatus = {
+  name: string
+  status?: string
 }
 
 type DnsConfig = {
@@ -68,10 +76,13 @@ const messages = {
     statusRefreshed: '状态已刷新',
     adapterEnabled: (name: string) => `已启用网卡 ${name}`,
     adapterDisabled: (name: string) => `已禁用网卡 ${name}`,
+    adapterRenamed: (oldName: string, newName: string) => `已将 ${oldName} 重命名为 ${newName}`,
+    adapterRenameEmpty: '网卡名称不能为空',
     adapterUnchanged: (name: string, status: string) => `命令已执行，但网卡 ${name} 状态仍为 ${status}`,
     adapterNoResult: (name: string) => `网卡 ${name} 命令没有返回状态信息，请查看控制台日志`,
     unknownAdapter: '未知适配器',
-    speed: '速率',
+    ipAddress: 'IP',
+    cableName: '网线名称',
     enable: '启用',
     disable: '禁用',
     dnsControl: 'DNS 控制',
@@ -113,10 +124,13 @@ const messages = {
     statusRefreshed: 'Status refreshed',
     adapterEnabled: (name: string) => `Enabled adapter ${name}`,
     adapterDisabled: (name: string) => `Disabled adapter ${name}`,
+    adapterRenamed: (oldName: string, newName: string) => `Renamed ${oldName} to ${newName}`,
+    adapterRenameEmpty: 'Adapter name cannot be empty',
     adapterUnchanged: (name: string, status: string) => `Command ran, but adapter ${name} is still ${status}`,
     adapterNoResult: (name: string) => `Adapter ${name} command returned no status details. Check console logs.`,
     unknownAdapter: 'Unknown adapter',
-    speed: 'Speed',
+    ipAddress: 'IP',
+    cableName: 'Cable name',
     enable: 'Enable',
     disable: 'Disable',
     dnsControl: 'DNS Control',
@@ -166,6 +180,8 @@ export default function App() {
   const [selectedDnsInterface, setSelectedDnsInterface] = useState('')
   const [dnsInput, setDnsInput] = useState('')
   const [loading, setLoading] = useState(false)
+  const [adapterActionName, setAdapterActionName] = useState<string | null>(null)
+  const [renamingAdapterName, setRenamingAdapterName] = useState<string | null>(null)
   const [activeTab, setActiveTab] = useState('adapters')
 
   const t = messages[locale]
@@ -176,27 +192,85 @@ export default function App() {
     window.localStorage.setItem(localeStorageKey, nextLocale)
   }
 
-  async function refresh(notify = false) {
-    await withLoading(async () => {
-      const [nextAdapters, nextDnsConfigs, nextVpns] = await Promise.all([
-        listAdapters(),
-        listDnsConfigs(),
-        listVpnProfiles(),
-      ])
+  async function runRefreshTask(task: () => Promise<void>, notify = false, showLoading = true) {
+    if (showLoading) {
+      await withLoading(task, notify ? t.statusRefreshed : undefined)
+      return
+    }
 
+    try {
+      await task()
+      if (notify) {
+        toast.success(t.statusRefreshed)
+      }
+    } catch (error) {
+      toast.danger(error instanceof Error ? error.message : String(error))
+    }
+  }
+
+  async function refreshAdapters(notify = false, showLoading = true) {
+    const task = async () => {
+      const nextAdapters = await listAdapters()
+      setAdapters(nextAdapters)
+    }
+
+    await runRefreshTask(task, notify, showLoading)
+  }
+
+  async function refreshAdapterStatuses() {
+    try {
+      const statuses = await listAdapterStatuses()
+      setAdapters(currentAdapters =>
+        currentAdapters.map(adapter => {
+          const nextStatus = statuses.find(status => status.name === adapter.name)
+          return nextStatus ? { ...adapter, status: nextStatus.status } : adapter
+        }),
+      )
+    } catch (error) {
+      toast.danger(error instanceof Error ? error.message : String(error))
+    }
+  }
+
+  async function refreshDnsConfigs(notify = false, showLoading = true) {
+    const task = async () => {
+      const nextDnsConfigs = await listDnsConfigs()
       const nextInterface = selectedDnsInterface || nextDnsConfigs[0]?.interfaceAlias || ''
       const nextDnsConfig = nextDnsConfigs.find(config => config.interfaceAlias === nextInterface)
 
-      setAdapters(nextAdapters)
       setDnsConfigs(nextDnsConfigs)
-      setVpns(nextVpns)
       setSelectedDnsInterface(nextInterface)
       setDnsInput(nextDnsConfig?.serverAddresses.join(', ') ?? '')
-    }, notify ? t.statusRefreshed : undefined)
+    }
+
+    await runRefreshTask(task, notify, showLoading)
+  }
+
+  async function refreshVpnProfiles(notify = false, showLoading = true) {
+    const task = async () => {
+      const nextVpns = await listVpnProfiles()
+      setVpns(nextVpns)
+    }
+
+    await runRefreshTask(task, notify, showLoading)
+  }
+
+  async function refreshCurrentTab(notify = false, showLoading = true) {
+    if (activeTab === 'dns') {
+      await refreshDnsConfigs(notify, showLoading)
+      return
+    }
+
+    if (activeTab === 'vpn') {
+      await refreshVpnProfiles(notify, showLoading)
+      return
+    }
+
+    await refreshAdapters(notify, showLoading)
   }
 
   async function toggleAdapter(name: string, enable: boolean) {
-    await withLoading(async () => {
+    try {
+      setAdapterActionName(name)
       let result: AdapterOperationResult | null = null
 
       if (isTauriRuntime) {
@@ -213,7 +287,7 @@ export default function App() {
       }
 
       console.info('[net-dock] adapter operation result', result)
-      await refresh(false)
+      await refreshAdapters(false, false)
 
       if (!result) {
         toast.warning(t.adapterNoResult(name))
@@ -226,7 +300,36 @@ export default function App() {
       }
 
       toast.success(enable ? t.adapterEnabled(name) : t.adapterDisabled(name))
-    })
+    } catch (error) {
+      toast.danger(error instanceof Error ? error.message : String(error))
+    } finally {
+      setAdapterActionName(null)
+    }
+  }
+
+  async function renameAdapter(oldName: string, newName: string) {
+    const trimmedName = newName.trim()
+    if (!trimmedName) {
+      toast.warning(t.adapterRenameEmpty)
+      return
+    }
+
+    if (trimmedName === oldName) {
+      return
+    }
+
+    try {
+      setRenamingAdapterName(oldName)
+      if (isTauriRuntime) {
+        await invoke('rename_adapter', { oldName, newName: trimmedName })
+      }
+      await Promise.all([refreshAdapters(false, false), refreshDnsConfigs(false, false)])
+      toast.success(t.adapterRenamed(oldName, trimmedName))
+    } catch (error) {
+      toast.danger(error instanceof Error ? error.message : String(error))
+    } finally {
+      setRenamingAdapterName(null)
+    }
   }
 
   async function setDns() {
@@ -244,7 +347,7 @@ export default function App() {
       if (isTauriRuntime) {
         await invoke('set_dns_servers', { interfaceAlias: selectedDnsInterface, serverAddresses })
       }
-      await refresh(false)
+      await refreshDnsConfigs(false, false)
     }, t.dnsUpdated(selectedDnsInterface))
   }
 
@@ -258,7 +361,7 @@ export default function App() {
       if (isTauriRuntime) {
         await invoke('clear_dns_servers', { interfaceAlias: selectedDnsInterface })
       }
-      await refresh(false)
+      await refreshDnsConfigs(false, false)
     }, t.dnsRestored(selectedDnsInterface))
   }
 
@@ -267,7 +370,7 @@ export default function App() {
       if (isTauriRuntime) {
         await invoke(connect ? 'connect_vpn' : 'disconnect_vpn', { name })
       }
-      await refresh(false)
+      await refreshVpnProfiles(false, false)
     }, connect ? t.vpnConnected(name) : t.vpnDisconnected(name))
   }
 
@@ -286,8 +389,35 @@ export default function App() {
   }
 
   useEffect(() => {
-    void refresh(false)
+    void refreshAdapters(false)
   }, [])
+
+  useEffect(() => {
+    if (activeTab === 'dns' && dnsConfigs.length === 0) {
+      void refreshDnsConfigs(false)
+    }
+
+    if (activeTab === 'vpn' && vpns.length === 0) {
+      void refreshVpnProfiles(false)
+    }
+  }, [activeTab])
+
+  useEffect(() => {
+    const shouldAutoRefresh = adapters.some(adapter => {
+      const status = adapter.status?.trim().toLowerCase()
+      return status !== 'disabled' && status !== 'up'
+    })
+
+    if (!shouldAutoRefresh) {
+      return
+    }
+
+    const intervalId = window.setInterval(() => {
+      void refreshAdapterStatuses()
+    }, 2000)
+
+    return () => window.clearInterval(intervalId)
+  }, [adapters])
 
   return (
     <main className="min-h-screen bg-white text-slate-900">
@@ -370,16 +500,6 @@ export default function App() {
                 </ListBox>
               </Select.Popover>
             </Select>
-            <Chip variant="soft">{t.adapterCount(adapters.length)}</Chip>
-            <Chip variant="soft">{t.vpnCount(vpns.length)}</Chip>
-            <Button className="gap-4" variant="primary" isPending={loading} onPress={() => void refresh(true)}>
-              {({ isPending }) => (
-                <>
-                  {isPending ? <Spinner color="current" size="sm" /> : <RefreshCw size={18} />}
-                  {isPending ? t.refreshing : t.refresh}
-                </>
-              )}
-            </Button>
           </div>
         </header>
 
@@ -390,7 +510,14 @@ export default function App() {
             ) : (
               <div className="grid grid-cols-[repeat(auto-fit,minmax(280px,1fr))] gap-3">
                 {adapters.map(adapter => (
-                  <AdapterCard key={adapter.name} adapter={adapter} labels={t} onToggle={toggleAdapter} />
+                  <AdapterCard
+                    key={adapter.name}
+                    adapter={adapter}
+                    isPending={adapterActionName === adapter.name || renamingAdapterName === adapter.name}
+                    labels={t}
+                    onRename={renameAdapter}
+                    onToggle={toggleAdapter}
+                  />
                 ))}
               </div>
             )}
@@ -491,46 +618,127 @@ export default function App() {
           </Tabs.Panel>
         </Tabs>
       </section>
+      <Button
+        aria-label={t.refresh}
+        className="fixed bottom-6 right-6 z-50 h-12 w-12 rounded-full p-0 shadow-lg"
+        variant="primary"
+        isPending={loading}
+        onPress={() => void refreshCurrentTab(true)}
+      >
+        {({ isPending }) => (isPending ? <Spinner color="current" size="sm" /> : <RefreshCw size={20} />)}
+      </Button>
     </main>
   )
 }
 
 function AdapterCard({
   adapter,
+  isPending,
   labels,
+  onRename,
   onToggle,
 }: {
   adapter: Adapter
+  isPending: boolean
   labels: Messages
+  onRename: (oldName: string, newName: string) => Promise<void>
   onToggle: (name: string, enable: boolean) => Promise<void>
 }) {
   const isUp = adapter.status?.toLowerCase() === 'up'
+  const isDisconnected = adapter.status?.toLowerCase() === 'disconnected'
+  const [isEditing, setIsEditing] = useState(false)
+  const [draftName, setDraftName] = useState(adapter.name)
+
+  useEffect(() => {
+    setDraftName(adapter.name)
+    setIsEditing(false)
+  }, [adapter.name])
+
+  async function saveName() {
+    await onRename(adapter.name, draftName)
+    setIsEditing(false)
+  }
 
   return (
-    <Card variant="default" className="border border-slate-200/80 bg-white shadow-sm">
+    <Card variant="default" className="relative overflow-hidden border border-slate-200/80 bg-white shadow-sm">
+      {isPending ? (
+        <div className="absolute inset-0 z-10 grid place-items-center bg-white/70 backdrop-blur-[1px]">
+          <Spinner />
+        </div>
+      ) : null}
       <Card.Content className="grid gap-4">
         <div className="flex justify-between gap-3">
-          <div>
-            <h4 className="font-semibold">{adapter.name}</h4>
+          <div className="min-w-0 flex-1">
+            {isEditing ? (
+              <div className="flex items-center gap-2">
+                <Input
+                  aria-label={labels.cableName}
+                  className="min-w-0 flex-1"
+                  value={draftName}
+                  onChange={event => setDraftName(event.target.value)}
+                  onKeyDown={event => {
+                    if (event.key === 'Enter') {
+                      void saveName()
+                    }
+
+                    if (event.key === 'Escape') {
+                      setDraftName(adapter.name)
+                      setIsEditing(false)
+                    }
+                  }}
+                  variant="secondary"
+                />
+                <Button aria-label="Save" className="h-8 w-8 p-0" size="sm" variant="ghost" onPress={() => void saveName()}>
+                  <Check size={15} />
+                </Button>
+                <Button
+                  aria-label="Cancel"
+                  className="h-8 w-8 p-0"
+                  size="sm"
+                  variant="ghost"
+                  onPress={() => {
+                    setDraftName(adapter.name)
+                    setIsEditing(false)
+                  }}
+                >
+                  <X size={15} />
+                </Button>
+              </div>
+            ) : (
+              <div className="flex min-w-0 items-center gap-2">
+                <h4 className="truncate font-semibold">{adapter.name}</h4>
+                <Button
+                  aria-label="Rename adapter"
+                  className="h-7 w-7 shrink-0 p-0"
+                  size="sm"
+                  variant="ghost"
+                  onPress={() => setIsEditing(true)}
+                >
+                  <Pencil size={14} />
+                </Button>
+              </div>
+            )}
             <p className="text-sm text-slate-500">{adapter.interfaceDescription ?? labels.unknownAdapter}</p>
           </div>
-          <Chip className="gap-4" variant="soft" color={isUp ? 'success' : 'default'}>
-            {isUp ? <CheckCircle2 size={14} /> : <XCircle size={14} />}
-            {adapter.status ?? 'Unknown'}
-          </Chip>
+          <Switch
+            aria-label={`${adapter.name} ${labels.status}`}
+            isSelected={isUp}
+            isDisabled={isPending || !adapter.status || adapter.status.toLowerCase() === 'unknown'}
+            onChange={selected => void onToggle(adapter.name, selected)}
+            size="sm"
+          >
+            <Switch.Control>
+              <Switch.Thumb />
+            </Switch.Control>
+            <Switch.Content className="inline-flex items-center gap-2 text-sm font-medium text-slate-600">
+              {adapter.status ?? 'Unknown'}
+              {isDisconnected ? <Spinner size="sm" /> : null}
+            </Switch.Content>
+          </Switch>
         </div>
         <div className="grid gap-2 text-sm">
-          <Meta label="MAC" value={adapter.macAddress ?? '-'} />
-          <Meta label={labels.speed} value={adapter.linkSpeed ?? '-'} />
-        </div>
-        <div className="flex flex-wrap gap-2">
-          <Button className="gap-4" size="sm" variant="secondary" onPress={() => onToggle(adapter.name, true)}>
-            <PlugZap size={16} />
-            {labels.enable}
-          </Button>
-          <Button size="sm" variant="danger-soft" onPress={() => onToggle(adapter.name, false)}>
-            {labels.disable}
-          </Button>
+          <Meta label={labels.ipAddress} value={adapter.ipAddresses.length > 0 ? adapter.ipAddresses.join(', ') : '-'} />
+          <Meta label={labels.cableName} value={adapter.connectionSpecificSuffix ?? '-'} />
         </div>
       </Card.Content>
     </Card>
@@ -627,6 +835,8 @@ async function listAdapters() {
       status: 'Up',
       macAddress: '00-11-22-33-44-55',
       linkSpeed: '1 Gbps',
+      ipAddresses: ['192.168.1.20'],
+      connectionSpecificSuffix: 'nepdi.com.cn',
     },
     {
       name: 'Wi-Fi',
@@ -634,7 +844,20 @@ async function listAdapters() {
       status: 'Disconnected',
       macAddress: '66-77-88-99-AA-BB',
       linkSpeed: '-',
+      ipAddresses: [],
+      connectionSpecificSuffix: '',
     },
+  ]
+}
+
+async function listAdapterStatuses() {
+  if (isTauriRuntime) {
+    return invoke<AdapterStatus[]>('list_adapter_statuses')
+  }
+
+  return [
+    { name: 'Ethernet', status: 'Up' },
+    { name: 'Wi-Fi', status: 'Disconnected' },
   ]
 }
 

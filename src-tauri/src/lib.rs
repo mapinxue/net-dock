@@ -35,6 +35,15 @@ struct NetworkAdapter {
     status: Option<String>,
     mac_address: Option<String>,
     link_speed: Option<String>,
+    ip_addresses: Vec<String>,
+    connection_specific_suffix: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AdapterStatus {
+    name: String,
+    status: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -67,9 +76,24 @@ struct VpnProfile {
 #[tauri::command]
 fn list_adapters() -> CommandResult<Vec<NetworkAdapter>> {
     let script = r#"
-Get-NetAdapter |
-  Select-Object Name, InterfaceDescription, Status, MacAddress, LinkSpeed |
-  ConvertTo-Json -Depth 4
+Get-NetAdapter | ForEach-Object {
+  $Adapter = $_
+  $IpAddresses = @(
+    Get-NetIPAddress -InterfaceIndex $Adapter.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+      Where-Object { $_.IPAddress -notlike "169.254.*" } |
+      Select-Object -ExpandProperty IPAddress
+  )
+
+  [PSCustomObject]@{
+    Name = $Adapter.Name
+    InterfaceDescription = $Adapter.InterfaceDescription
+    Status = $Adapter.Status
+    MacAddress = $Adapter.MacAddress
+    LinkSpeed = $Adapter.LinkSpeed
+    IpAddresses = $IpAddresses
+    ConnectionSpecificSuffix = (Get-DnsClient -InterfaceIndex $Adapter.ifIndex -ErrorAction SilentlyContinue).ConnectionSpecificSuffix
+  }
+} | ConvertTo-Json -Depth 4
 "#;
 
     let value = run_powershell_json(script, &[])?;
@@ -81,6 +105,27 @@ Get-NetAdapter |
             status: read_string(&item, "Status"),
             mac_address: read_string(&item, "MacAddress"),
             link_speed: read_string(&item, "LinkSpeed"),
+            ip_addresses: read_string_array(&item, "IpAddresses"),
+            connection_specific_suffix: read_string(&item, "ConnectionSpecificSuffix"),
+        })
+        .filter(|adapter| !adapter.name.is_empty())
+        .collect())
+}
+
+#[tauri::command]
+fn list_adapter_statuses() -> CommandResult<Vec<AdapterStatus>> {
+    let script = r#"
+Get-NetAdapter |
+  Select-Object Name, Status |
+  ConvertTo-Json -Depth 3
+"#;
+
+    let value = run_powershell_json(script, &[])?;
+    Ok(json_items(value)
+        .into_iter()
+        .map(|item| AdapterStatus {
+            name: read_string(&item, "Name").unwrap_or_default(),
+            status: read_string(&item, "Status"),
         })
         .filter(|adapter| !adapter.name.is_empty())
         .collect())
@@ -94,6 +139,15 @@ fn enable_adapter(name: String) -> CommandResult<AdapterOperationResult> {
 #[tauri::command]
 fn disable_adapter(name: String) -> CommandResult<AdapterOperationResult> {
     run_adapter_action(name, "disable")
+}
+
+#[tauri::command]
+fn rename_adapter(old_name: String, new_name: String) -> CommandResult<()> {
+    run_powershell(
+        "param($OldName, $NewName) Rename-NetAdapter -Name $OldName -NewName $NewName -Confirm:$false -ErrorAction Stop",
+        &[old_name, new_name],
+    )?;
+    Ok(())
 }
 
 #[tauri::command]
@@ -188,8 +242,25 @@ fn run_adapter_action(name: String, action: &str) -> CommandResult<AdapterOperat
     let script = r#"
 param($Name, $Action)
 
-$Before = Get-NetAdapter -Name $Name -ErrorAction Stop |
-  Select-Object Name, InterfaceDescription, Status, MacAddress, LinkSpeed
+function Convert-NetDockAdapter($Adapter) {
+  $IpAddresses = @(
+    Get-NetIPAddress -InterfaceIndex $Adapter.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+      Where-Object { $_.IPAddress -notlike "169.254.*" } |
+      Select-Object -ExpandProperty IPAddress
+  )
+
+  [PSCustomObject]@{
+    Name = $Adapter.Name
+    InterfaceDescription = $Adapter.InterfaceDescription
+    Status = $Adapter.Status
+    MacAddress = $Adapter.MacAddress
+    LinkSpeed = $Adapter.LinkSpeed
+    IpAddresses = $IpAddresses
+    ConnectionSpecificSuffix = (Get-DnsClient -InterfaceIndex $Adapter.ifIndex -ErrorAction SilentlyContinue).ConnectionSpecificSuffix
+  }
+}
+
+$Before = Convert-NetDockAdapter (Get-NetAdapter -Name $Name -ErrorAction Stop)
 
 if ($Action -eq "enable") {
   Enable-NetAdapter -Name $Name -Confirm:$false -ErrorAction Stop
@@ -201,8 +272,7 @@ if ($Action -eq "enable") {
 
 Start-Sleep -Milliseconds 700
 
-$After = Get-NetAdapter -Name $Name -ErrorAction Stop |
-  Select-Object Name, InterfaceDescription, Status, MacAddress, LinkSpeed
+$After = Convert-NetDockAdapter (Get-NetAdapter -Name $Name -ErrorAction Stop)
 
 [PSCustomObject]@{
   Action = $Action
@@ -233,9 +303,14 @@ $After = Get-NetAdapter -Name $Name -ErrorAction Stop |
 
 fn run_powershell(script: &str, args: &[String]) -> CommandResult<String> {
     let mut command = Command::new("powershell.exe");
+    let argument_list = args
+        .iter()
+        .map(|arg| format!("'{}'", powershell_single_quote(arg)))
+        .collect::<Vec<_>>()
+        .join(" ");
     let utf8_script = format!(
-        "[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); $OutputEncoding = [System.Text.UTF8Encoding]::new($false); $ErrorActionPreference = 'Stop'; & {{ {} }}",
-        script
+        "[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); $OutputEncoding = [System.Text.UTF8Encoding]::new($false); $ErrorActionPreference = 'Stop'; & {{ {} }} {}",
+        script, argument_list
     );
 
     command
@@ -245,10 +320,6 @@ fn run_powershell(script: &str, args: &[String]) -> CommandResult<String> {
         .arg("Bypass")
         .arg("-Command")
         .arg(utf8_script);
-
-    for arg in args {
-        command.arg(arg);
-    }
 
     run_command(command)
 }
@@ -260,6 +331,10 @@ fn run_native(program: &str, args: &[String]) -> CommandResult<String> {
     }
 
     run_command(command)
+}
+
+fn powershell_single_quote(value: &str) -> String {
+    value.replace('\'', "''")
 }
 
 fn run_command(mut command: Command) -> CommandResult<String> {
@@ -295,6 +370,8 @@ fn read_adapter(value: &Value) -> CommandResult<NetworkAdapter> {
         status: read_string(value, "Status"),
         mac_address: read_string(value, "MacAddress"),
         link_speed: read_string(value, "LinkSpeed"),
+        ip_addresses: read_string_array(value, "IpAddresses"),
+        connection_specific_suffix: read_string(value, "ConnectionSpecificSuffix"),
     })
 }
 
@@ -325,8 +402,10 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
             list_adapters,
+            list_adapter_statuses,
             enable_adapter,
             disable_adapter,
+            rename_adapter,
             list_dns_configs,
             set_dns_servers,
             clear_dns_servers,
