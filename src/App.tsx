@@ -11,12 +11,10 @@ import {
   Separator,
   Spinner,
   Switch,
-  Tag,
-  TagGroup,
   Tabs,
   toast,
 } from '@heroui/react'
-import { Check, ChevronDown, Languages, Network, Pencil, RefreshCw, Shield, Wifi, X } from 'lucide-react'
+import { Check, ChevronDown, Languages, Pencil, RefreshCw, X } from 'lucide-react'
 import { useEffect, useState } from 'react'
 
 type Locale = 'zh' | 'en'
@@ -435,34 +433,22 @@ export default function App() {
 
           <div className="flex min-w-0 flex-1 items-center justify-end gap-3 max-lg:w-full max-lg:flex-wrap">
             <Tabs
-              className="min-w-0"
+              className="w-full max-w-md"
               selectedKey={activeTab}
               onSelectionChange={key => setActiveTab(key.toString())}
-              variant="secondary"
             >
-                <Tabs.ListContainer>
-                  <Tabs.List aria-label={t.networkSections} className="w-fit">
-                  <Tabs.Tab id="adapters" className="gap-4">
-                    <Network size={16} />
+              <Tabs.ListContainer>
+                <Tabs.List aria-label={t.networkSections}>
+                  <Tabs.Tab id="adapters">
                     {t.adapters}
                     <Tabs.Indicator />
                   </Tabs.Tab>
-                  <Tabs.Tab id="dns" className="gap-4">
-                    <Tabs.Separator />
-                    <Wifi size={16} />
-                    <span className="inline-flex items-center gap-0">
-                      <span>DNS</span>
-                      <InlineWipTag />
-                    </span>
+                  <Tabs.Tab id="dns">
+                    DNS
                     <Tabs.Indicator />
                   </Tabs.Tab>
-                  <Tabs.Tab id="vpn" className="gap-4">
-                    <Tabs.Separator />
-                    <Shield size={16} />
-                    <span className="inline-flex items-center gap-0">
-                      <span>VPN</span>
-                      <InlineWipTag />
-                    </span>
+                  <Tabs.Tab id="vpn">
+                    VPN
                     <Tabs.Indicator />
                   </Tabs.Tab>
                 </Tabs.List>
@@ -788,19 +774,6 @@ function Meta({ label, value }: { label: string; value: string }) {
       <span className="text-slate-500">{label}</span>
       <span className="break-all text-right text-slate-700">{value}</span>
     </div>
-  )
-}
-
-function InlineWipTag() {
-  return (
-    <TagGroup aria-label="Work in progress" className="ml-0 shrink-0" size="sm" variant="surface">
-      <Label className="sr-only">Status</Label>
-      <TagGroup.List className="gap-0">
-        <Tag id="wip" className="px-1.5 font-semibold tracking-[0.12em] uppercase">
-          WIP
-        </Tag>
-      </TagGroup.List>
-    </TagGroup>
   )
 }
 
