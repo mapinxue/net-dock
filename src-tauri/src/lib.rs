@@ -1,12 +1,21 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::process::Command;
+use tauri::{
+    menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem},
+    tray::{MouseButton, TrayIconBuilder, TrayIconEvent},
+    AppHandle, Manager, Runtime, WindowEvent,
+};
 use thiserror::Error;
 
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
 
 const CREATE_NO_WINDOW: u32 = 0x08000000;
+const TRAY_ID: &str = "net-dock-tray";
+const TRAY_LOADING_ID: &str = "tray-loading";
+const TRAY_EXIT_ID: &str = "tray-exit";
+const TRAY_ADAPTER_PREFIX: &str = "tray-adapter:";
 
 #[derive(Debug, Error)]
 enum NetDockError {
@@ -396,10 +405,172 @@ fn read_string_array(value: &Value, key: &str) -> Vec<String> {
     }
 }
 
+fn setup_tray(app: &mut tauri::App) -> tauri::Result<()> {
+    let menu = build_loading_tray_menu(app.handle())?;
+    let mut tray = TrayIconBuilder::with_id(TRAY_ID)
+        .tooltip("Net Dock")
+        .menu(&menu)
+        .show_menu_on_left_click(false)
+        .on_menu_event(handle_tray_menu_event)
+        .on_tray_icon_event(|tray, event| {
+            if matches!(
+                event,
+                TrayIconEvent::Click {
+                    button: MouseButton::Left,
+                    ..
+                } | TrayIconEvent::DoubleClick {
+                    button: MouseButton::Left,
+                    ..
+                }
+            ) {
+                show_main_window(tray.app_handle());
+            }
+        });
+
+    if let Some(icon) = app.default_window_icon().cloned() {
+        tray = tray.icon(icon);
+    }
+
+    tray.build(app)?;
+
+    let handle = app.handle().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        refresh_tray_menu(&handle);
+    });
+
+    Ok(())
+}
+
+fn build_loading_tray_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
+    let menu = Menu::new(app)?;
+    let loading = MenuItem::with_id(app, TRAY_LOADING_ID, "正在加载网卡...", false, None::<&str>)?;
+    let separator = PredefinedMenuItem::separator(app)?;
+    let exit = MenuItem::with_id(app, TRAY_EXIT_ID, "退出", true, None::<&str>)?;
+
+    menu.append(&loading)?;
+    menu.append(&separator)?;
+    menu.append(&exit)?;
+
+    Ok(menu)
+}
+
+fn build_tray_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
+    let menu = Menu::new(app)?;
+
+    match list_adapter_statuses() {
+        Ok(adapters) if adapters.is_empty() => {
+            let empty = MenuItem::with_id(app, TRAY_LOADING_ID, "未发现网卡", false, None::<&str>)?;
+            menu.append(&empty)?;
+        }
+        Ok(adapters) => {
+            for adapter in adapters {
+                let id = format!("{TRAY_ADAPTER_PREFIX}{}", adapter.name);
+                let checked = adapter
+                    .status
+                    .as_deref()
+                    .is_some_and(is_enabled_adapter_status);
+                let item =
+                    CheckMenuItem::with_id(app, id, adapter.name, true, checked, None::<&str>)?;
+                menu.append(&item)?;
+            }
+        }
+        Err(error) => {
+            let item = MenuItem::with_id(
+                app,
+                TRAY_LOADING_ID,
+                format!("网卡加载失败: {error}"),
+                false,
+                None::<&str>,
+            )?;
+            menu.append(&item)?;
+        }
+    }
+
+    let separator = PredefinedMenuItem::separator(app)?;
+    let exit = MenuItem::with_id(app, TRAY_EXIT_ID, "退出", true, None::<&str>)?;
+    menu.append(&separator)?;
+    menu.append(&exit)?;
+
+    Ok(menu)
+}
+
+fn handle_tray_menu_event<R: Runtime + 'static>(app: &AppHandle<R>, event: tauri::menu::MenuEvent) {
+    let id = event.id().as_ref();
+    if id == TRAY_EXIT_ID {
+        app.exit(0);
+        return;
+    }
+
+    if let Some(adapter_name) = id.strip_prefix(TRAY_ADAPTER_PREFIX) {
+        toggle_adapter_from_tray(app, adapter_name.to_string());
+    }
+}
+
+fn toggle_adapter_from_tray<R: Runtime + 'static>(app: &AppHandle<R>, adapter_name: String) {
+    let app = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let current_status = list_adapter_statuses().ok().and_then(|statuses| {
+            statuses
+                .into_iter()
+                .find(|adapter| adapter.name == adapter_name)
+                .and_then(|adapter| adapter.status)
+        });
+        let action = if current_status
+            .as_deref()
+            .is_some_and(is_enabled_adapter_status)
+        {
+            "disable"
+        } else {
+            "enable"
+        };
+
+        if let Err(error) = run_adapter_action(adapter_name.clone(), action) {
+            eprintln!("failed to {action} adapter from tray: {error}");
+        }
+
+        refresh_tray_menu(&app);
+    });
+}
+
+fn refresh_tray_menu<R: Runtime>(app: &AppHandle<R>) {
+    if let Some(tray) = app.tray_by_id(TRAY_ID) {
+        match build_tray_menu(app) {
+            Ok(menu) => {
+                if let Err(error) = tray.set_menu(Some(menu)) {
+                    eprintln!("failed to refresh tray menu: {error}");
+                }
+            }
+            Err(error) => eprintln!("failed to build tray menu: {error}"),
+        }
+    }
+}
+
+fn show_main_window<R: Runtime>(app: &AppHandle<R>) {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.unminimize();
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
+}
+
+fn is_enabled_adapter_status(status: &str) -> bool {
+    status.trim().eq_ignore_ascii_case("up")
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .setup(|app| {
+            setup_tray(app)?;
+            Ok(())
+        })
+        .on_window_event(|window, event| {
+            if let WindowEvent::CloseRequested { api, .. } = event {
+                api.prevent_close();
+                let _ = window.hide();
+            }
+        })
         .invoke_handler(tauri::generate_handler![
             list_adapters,
             list_adapter_statuses,
