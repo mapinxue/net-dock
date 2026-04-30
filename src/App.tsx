@@ -11,15 +11,14 @@ import {
   Separator,
   Spinner,
   Switch,
-  Tag,
-  TagGroup,
   Tabs,
   toast,
 } from '@heroui/react'
-import { Check, ChevronDown, Languages, Network, Pencil, RefreshCw, Shield, Wifi, X } from 'lucide-react'
+import { ArrowLeft, Check, ChevronDown, Pencil, RefreshCw, Settings as Gear, X } from 'lucide-react'
 import { useEffect, useState } from 'react'
 
 type Locale = 'zh' | 'en'
+type Page = 'home' | 'settings'
 
 type Adapter = {
   name: string
@@ -64,7 +63,9 @@ const localeStorageKey = 'net-dock-locale'
 const messages = {
   zh: {
     appSubtitle: '网络管理',
+    settings: '设置',
     language: '语言',
+    languageDescription: '选择界面显示语言。',
     chinese: '简体中文',
     english: 'English',
     networkSections: '网络功能',
@@ -112,7 +113,9 @@ const messages = {
   },
   en: {
     appSubtitle: 'Network Operations',
+    settings: 'Settings',
     language: 'Language',
+    languageDescription: 'Choose the interface display language.',
     chinese: '简体中文',
     english: 'English',
     networkSections: 'Network sections',
@@ -174,6 +177,7 @@ function detectLocale(): Locale {
 
 export default function App() {
   const [locale, setLocale] = useState<Locale>(detectLocale)
+  const [page, setPage] = useState<Page>('home')
   const [adapters, setAdapters] = useState<Adapter[]>([])
   const [dnsConfigs, setDnsConfigs] = useState<DnsConfig[]>([])
   const [vpns, setVpns] = useState<VpnProfile[]>([])
@@ -419,6 +423,10 @@ export default function App() {
     return () => window.clearInterval(intervalId)
   }, [adapters])
 
+  if (page === 'settings') {
+    return <SettingsPage locale={locale} labels={t} onBack={() => setPage('home')} onChangeLocale={changeLocale} />
+  }
+
   return (
     <main className="min-h-screen bg-white text-slate-900">
       <section className="mx-auto flex min-h-screen max-w-7xl flex-col gap-5 px-5 py-5">
@@ -435,71 +443,31 @@ export default function App() {
 
           <div className="flex min-w-0 flex-1 items-center justify-end gap-3 max-lg:w-full max-lg:flex-wrap">
             <Tabs
-              className="min-w-0"
+              className="w-full max-w-md"
               selectedKey={activeTab}
               onSelectionChange={key => setActiveTab(key.toString())}
-              variant="secondary"
             >
-                <Tabs.ListContainer>
-                  <Tabs.List aria-label={t.networkSections} className="w-fit">
-                  <Tabs.Tab id="adapters" className="gap-4">
-                    <Network size={16} />
+              <Tabs.ListContainer>
+                <Tabs.List aria-label={t.networkSections}>
+                  <Tabs.Tab id="adapters">
                     {t.adapters}
                     <Tabs.Indicator />
                   </Tabs.Tab>
-                  <Tabs.Tab id="dns" className="gap-4">
-                    <Tabs.Separator />
-                    <Wifi size={16} />
-                    <span className="inline-flex items-center gap-0">
-                      <span>DNS</span>
-                      <InlineWipTag />
-                    </span>
+                  <Tabs.Tab id="dns">
+                    DNS
                     <Tabs.Indicator />
                   </Tabs.Tab>
-                  <Tabs.Tab id="vpn" className="gap-4">
-                    <Tabs.Separator />
-                    <Shield size={16} />
-                    <span className="inline-flex items-center gap-0">
-                      <span>VPN</span>
-                      <InlineWipTag />
-                    </span>
+                  <Tabs.Tab id="vpn">
+                    VPN
                     <Tabs.Indicator />
                   </Tabs.Tab>
                 </Tabs.List>
               </Tabs.ListContainer>
             </Tabs>
 
-            <Select
-              className="w-36"
-              selectedKey={locale}
-              onSelectionChange={key => {
-                if (key === 'zh' || key === 'en') {
-                  changeLocale(key)
-                }
-              }}
-              aria-label={t.language}
-              variant="secondary"
-            >
-              <Select.Trigger>
-                <Languages size={16} />
-                <Select.Value />
-                <Select.Indicator>
-                  <ChevronDown size={16} />
-                </Select.Indicator>
-              </Select.Trigger>
-              <Select.Popover>
-                <ListBox>
-                  <ListBox.Item id="zh" textValue={t.chinese}>
-                    {t.chinese}
-                    <ListBox.ItemIndicator />
-                  </ListBox.Item>
-                  <ListBox.Item id="en" textValue={t.english}>
-                    {t.english}
-                    <ListBox.ItemIndicator />
-                  </ListBox.Item>
-                </ListBox>
-              </Select.Popover>
-            </Select>
+            <Button isIconOnly variant="secondary" aria-label={t.settings} onPress={() => setPage('settings')}>
+              <Gear size={18} />
+            </Button>
           </div>
         </header>
 
@@ -627,6 +595,64 @@ export default function App() {
       >
         {({ isPending }) => (isPending ? <Spinner color="current" size="sm" /> : <RefreshCw size={20} />)}
       </Button>
+    </main>
+  )
+}
+
+function SettingsPage({
+  locale,
+  labels,
+  onBack,
+  onChangeLocale,
+}: {
+  locale: Locale
+  labels: Messages
+  onBack: () => void
+  onChangeLocale: (locale: Locale) => void
+}) {
+  return (
+    <main className="min-h-screen bg-white text-slate-900">
+      <section className="mx-auto flex min-h-screen max-w-7xl flex-col gap-8 px-5 py-5">
+        <header className="flex items-center gap-3">
+          <Button isIconOnly variant="secondary" aria-label={labels.settings} onPress={onBack}>
+            <ArrowLeft size={18} />
+          </Button>
+          <h1 className="font-['Avenir_Next',_'Segoe_UI',_sans-serif] text-xl font-semibold">{labels.settings}</h1>
+        </header>
+
+        <div className="grid max-w-lg gap-3">
+          <div className="grid gap-1">
+            <h2 className="text-base font-semibold">{labels.language}</h2>
+            <p className="text-sm text-slate-500">{labels.languageDescription}</p>
+          </div>
+
+          <Tabs
+            className="w-full max-w-lg"
+            selectedKey={locale}
+            onSelectionChange={key => {
+              if (key === 'zh' || key === 'en') {
+                onChangeLocale(key)
+              }
+            }}
+          >
+            <Tabs.ListContainer className="justify-start">
+              <Tabs.List
+                aria-label={labels.language}
+                className="w-fit *:h-6 *:w-fit *:px-3 *:text-sm *:font-normal *:data-[selected=true]:text-accent-foreground"
+              >
+                <Tabs.Tab id="zh">
+                  {labels.chinese}
+                  <Tabs.Indicator className="bg-accent" />
+                </Tabs.Tab>
+                <Tabs.Tab id="en">
+                  {labels.english}
+                  <Tabs.Indicator className="bg-accent" />
+                </Tabs.Tab>
+              </Tabs.List>
+            </Tabs.ListContainer>
+          </Tabs>
+        </div>
+      </section>
     </main>
   )
 }
@@ -788,19 +814,6 @@ function Meta({ label, value }: { label: string; value: string }) {
       <span className="text-slate-500">{label}</span>
       <span className="break-all text-right text-slate-700">{value}</span>
     </div>
-  )
-}
-
-function InlineWipTag() {
-  return (
-    <TagGroup aria-label="Work in progress" className="ml-0 shrink-0" size="sm" variant="surface">
-      <Label className="sr-only">Status</Label>
-      <TagGroup.List className="gap-0">
-        <Tag id="wip" className="px-1.5 font-semibold tracking-[0.12em] uppercase">
-          WIP
-        </Tag>
-      </TagGroup.List>
-    </TagGroup>
   )
 }
 
