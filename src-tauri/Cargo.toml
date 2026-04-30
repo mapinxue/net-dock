@@ -1,6 +1,6 @@
 [package]
 name = "net-dock"
-version = "0.1.2"
+version = "0.1.3"
 description = "Windows network manager for adapters, DNS, and VPN."
 authors = ["net-dock contributors"]
 edition = "2021"
