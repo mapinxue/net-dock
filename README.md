@@ -2,9 +2,9 @@
 
 [简体中文](docs/README.zh-CN.md)
 
-Net Dock is a Windows desktop network utility built with Tauri. It focuses on day-to-day adapter switching, network status inspection, DNS control, and VPN operations.
+Net Dock is a Windows desktop network utility built with Tauri. It focuses on day-to-day adapter switching, network status inspection, proxy inspection, and DNS control.
 
-> Status: actively iterating. Some DNS and VPN workflows are still marked as WIP in the app.
+> Status: actively iterating. Some DNS workflows are still marked as WIP in the app.
 
 ![Net Dock screenshot](docs/screenshot.png)
 
@@ -16,17 +16,16 @@ Net Dock is a Windows desktop network utility built with Tauri. It focuses on da
 - Auto-refresh adapter status during transient states such as `Disconnected`.
 - Manually refresh the current view from a floating refresh button.
 - Switch UI language between English and Simplified Chinese.
+- Read the current Windows proxy settings from the user registry.
 - Read IPv4 DNS configuration.
 - Set static DNS servers or restore automatic DNS.
-- Read saved Windows VPN profiles.
-- Connect or disconnect saved VPN profiles.
 - Request administrator permission on launch for network operations.
 
 ## Install
 
 Download the portable Windows zip from the GitHub Releases page, unzip it, and run `net-dock.exe`.
 
-Adapter, DNS, and VPN operations usually require administrator permission. Net Dock requests Windows UAC elevation when it starts.
+Adapter and DNS operations usually require administrator permission. Net Dock requests Windows UAC elevation when it starts.
 
 ## Development
 
@@ -49,6 +48,10 @@ Build an installer when NSIS or WiX is available:
 npm run tauri -- build --bundles nsis
 ```
 
+## Release Updates
+
+See the Chinese guide for the current updater release workflow: [发布更新教程](docs/release-updates.zh-CN.md).
+
 ## Notes
 
-Net Dock currently uses PowerShell commands such as `Get-NetAdapter`, `Get-NetIPAddress`, `Get-DnsClient`, and `Rename-NetAdapter` behind the Tauri backend. The adapter status auto-refresh path uses a lighter status-only query to reduce refresh overhead.
+Net Dock currently uses PowerShell commands such as `Get-NetAdapter`, `Get-NetIPAddress`, `Get-DnsClient`, and `Rename-NetAdapter` behind the Tauri backend. Proxy status is read from `HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings`. The adapter status auto-refresh path uses a lighter status-only query to reduce refresh overhead.

@@ -23,6 +23,8 @@ enum NetDockError {
     PowerShell(String),
     #[error("无法解析 PowerShell 输出: {0}")]
     Json(String),
+    #[error("后台任务执行失败: {0}")]
+    Task(String),
 }
 
 impl Serialize for NetDockError {
@@ -75,15 +77,21 @@ struct DnsConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct VpnProfile {
-    name: String,
-    server_address: Option<String>,
-    tunnel_type: Option<String>,
-    connection_status: Option<String>,
+struct ProxyConfig {
+    proxy_enable: bool,
+    proxy_server: Option<String>,
+    proxy_override: Option<String>,
+    auto_config_url: Option<String>,
+    auto_detect: bool,
+    registry_path: String,
 }
 
 #[tauri::command]
-fn list_adapters() -> CommandResult<Vec<NetworkAdapter>> {
+async fn list_adapters() -> CommandResult<Vec<NetworkAdapter>> {
+    run_blocking(list_adapters_impl).await
+}
+
+fn list_adapters_impl() -> CommandResult<Vec<NetworkAdapter>> {
     let script = r#"
 Get-NetAdapter | ForEach-Object {
   $Adapter = $_
@@ -122,7 +130,11 @@ Get-NetAdapter | ForEach-Object {
 }
 
 #[tauri::command]
-fn list_adapter_statuses() -> CommandResult<Vec<AdapterStatus>> {
+async fn list_adapter_statuses() -> CommandResult<Vec<AdapterStatus>> {
+    run_blocking(list_adapter_statuses_impl).await
+}
+
+fn list_adapter_statuses_impl() -> CommandResult<Vec<AdapterStatus>> {
     let script = r#"
 Get-NetAdapter |
   Select-Object Name, Status |
@@ -141,17 +153,21 @@ Get-NetAdapter |
 }
 
 #[tauri::command]
-fn enable_adapter(name: String) -> CommandResult<AdapterOperationResult> {
-    run_adapter_action(name, "enable")
+async fn enable_adapter(name: String) -> CommandResult<AdapterOperationResult> {
+    run_blocking(move || run_adapter_action(name, "enable")).await
 }
 
 #[tauri::command]
-fn disable_adapter(name: String) -> CommandResult<AdapterOperationResult> {
-    run_adapter_action(name, "disable")
+async fn disable_adapter(name: String) -> CommandResult<AdapterOperationResult> {
+    run_blocking(move || run_adapter_action(name, "disable")).await
 }
 
 #[tauri::command]
-fn rename_adapter(old_name: String, new_name: String) -> CommandResult<()> {
+async fn rename_adapter(old_name: String, new_name: String) -> CommandResult<()> {
+    run_blocking(move || rename_adapter_impl(old_name, new_name)).await
+}
+
+fn rename_adapter_impl(old_name: String, new_name: String) -> CommandResult<()> {
     run_powershell(
         "param($OldName, $NewName) Rename-NetAdapter -Name $OldName -NewName $NewName -Confirm:$false -ErrorAction Stop",
         &[old_name, new_name],
@@ -160,7 +176,11 @@ fn rename_adapter(old_name: String, new_name: String) -> CommandResult<()> {
 }
 
 #[tauri::command]
-fn list_dns_configs() -> CommandResult<Vec<DnsConfig>> {
+async fn list_dns_configs() -> CommandResult<Vec<DnsConfig>> {
+    run_blocking(list_dns_configs_impl).await
+}
+
+fn list_dns_configs_impl() -> CommandResult<Vec<DnsConfig>> {
     let script = r#"
 Get-DnsClientServerAddress -AddressFamily IPv4 |
   Select-Object InterfaceAlias, ServerAddresses |
@@ -179,9 +199,19 @@ Get-DnsClientServerAddress -AddressFamily IPv4 |
 }
 
 #[tauri::command]
-fn set_dns_servers(interface_alias: String, server_addresses: Vec<String>) -> CommandResult<()> {
+async fn set_dns_servers(
+    interface_alias: String,
+    server_addresses: Vec<String>,
+) -> CommandResult<()> {
+    run_blocking(move || set_dns_servers_impl(interface_alias, server_addresses)).await
+}
+
+fn set_dns_servers_impl(
+    interface_alias: String,
+    server_addresses: Vec<String>,
+) -> CommandResult<()> {
     if server_addresses.is_empty() {
-        return clear_dns_servers(interface_alias);
+        return clear_dns_servers_impl(interface_alias);
     }
 
     let joined = server_addresses.join(",");
@@ -197,7 +227,11 @@ Set-DnsClientServerAddress -InterfaceAlias $InterfaceAlias -ServerAddresses $Ser
 }
 
 #[tauri::command]
-fn clear_dns_servers(interface_alias: String) -> CommandResult<()> {
+async fn clear_dns_servers(interface_alias: String) -> CommandResult<()> {
+    run_blocking(move || clear_dns_servers_impl(interface_alias)).await
+}
+
+fn clear_dns_servers_impl(interface_alias: String) -> CommandResult<()> {
     run_powershell(
         "param($InterfaceAlias) Set-DnsClientServerAddress -InterfaceAlias $InterfaceAlias -ResetServerAddresses",
         &[interface_alias],
@@ -206,36 +240,105 @@ fn clear_dns_servers(interface_alias: String) -> CommandResult<()> {
 }
 
 #[tauri::command]
-fn list_vpn_profiles() -> CommandResult<Vec<VpnProfile>> {
+async fn get_proxy_config() -> CommandResult<ProxyConfig> {
+    run_blocking(get_proxy_config_impl).await
+}
+
+#[tauri::command]
+async fn disable_proxy() -> CommandResult<ProxyConfig> {
+    run_blocking(disable_proxy_impl).await
+}
+
+#[tauri::command]
+async fn enable_proxy() -> CommandResult<ProxyConfig> {
+    run_blocking(enable_proxy_impl).await
+}
+
+fn get_proxy_config_impl() -> CommandResult<ProxyConfig> {
     let script = r#"
-Get-VpnConnection |
-  Select-Object Name, ServerAddress, TunnelType, ConnectionStatus |
-  ConvertTo-Json -Depth 4
+$Path = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings"
+$Settings = Get-ItemProperty -Path $Path -ErrorAction Stop
+
+[PSCustomObject]@{
+  ProxyEnable = [bool]($Settings.ProxyEnable -eq 1)
+  ProxyServer = $Settings.ProxyServer
+  ProxyOverride = $Settings.ProxyOverride
+  AutoConfigUrl = $Settings.AutoConfigURL
+  AutoDetect = [bool]($Settings.AutoDetect -eq 1)
+  RegistryPath = "HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings"
+} | ConvertTo-Json -Depth 4
 "#;
 
     let value = run_powershell_json(script, &[])?;
-    Ok(json_items(value)
-        .into_iter()
-        .map(|item| VpnProfile {
-            name: read_string(&item, "Name").unwrap_or_default(),
-            server_address: read_string(&item, "ServerAddress"),
-            tunnel_type: read_string(&item, "TunnelType"),
-            connection_status: read_string(&item, "ConnectionStatus"),
-        })
-        .filter(|profile| !profile.name.is_empty())
-        .collect())
+    Ok(ProxyConfig {
+        proxy_enable: value
+            .get("ProxyEnable")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        proxy_server: read_string(&value, "ProxyServer"),
+        proxy_override: read_string(&value, "ProxyOverride"),
+        auto_config_url: read_string(&value, "AutoConfigUrl"),
+        auto_detect: value
+            .get("AutoDetect")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        registry_path: read_string(&value, "RegistryPath").unwrap_or_default(),
+    })
 }
 
-#[tauri::command]
-fn connect_vpn(name: String) -> CommandResult<()> {
-    run_native("rasdial", &[name])?;
-    Ok(())
+fn disable_proxy_impl() -> CommandResult<ProxyConfig> {
+    let script = r#"
+$Path = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings"
+Set-ItemProperty -Path $Path -Name ProxyEnable -Value 0 -ErrorAction Stop
+
+$Signature = @"
+[DllImport("wininet.dll", SetLastError = true)]
+public static extern bool InternetSetOption(System.IntPtr hInternet, int dwOption, System.IntPtr lpBuffer, int dwBufferLength);
+"@
+$WinInet = Add-Type -MemberDefinition $Signature -Name WinInet -Namespace NetDock -PassThru
+$null = $WinInet::InternetSetOption([System.IntPtr]::Zero, 39, [System.IntPtr]::Zero, 0)
+$null = $WinInet::InternetSetOption([System.IntPtr]::Zero, 37, [System.IntPtr]::Zero, 0)
+"#;
+
+    run_powershell(script, &[])?;
+    get_proxy_config_impl()
 }
 
-#[tauri::command]
-fn disconnect_vpn(name: String) -> CommandResult<()> {
-    run_native("rasdial", &[name, "/disconnect".to_string()])?;
-    Ok(())
+fn enable_proxy_impl() -> CommandResult<ProxyConfig> {
+    let script = r#"
+$Path = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings"
+$Settings = Get-ItemProperty -Path $Path -ErrorAction Stop
+
+$HasProxyServer = -not [string]::IsNullOrWhiteSpace($Settings.ProxyServer)
+$HasAutoConfigUrl = -not [string]::IsNullOrWhiteSpace($Settings.AutoConfigURL)
+
+if (-not $HasProxyServer -and -not $HasAutoConfigUrl) {
+  throw "当前没有可启用的代理配置，请先在系统中配置 ProxyServer 或 AutoConfigURL。"
+}
+
+Set-ItemProperty -Path $Path -Name ProxyEnable -Value 1 -ErrorAction Stop
+
+$Signature = @"
+[DllImport("wininet.dll", SetLastError = true)]
+public static extern bool InternetSetOption(System.IntPtr hInternet, int dwOption, System.IntPtr lpBuffer, int dwBufferLength);
+"@
+$WinInet = Add-Type -MemberDefinition $Signature -Name WinInet -Namespace NetDock -PassThru
+$null = $WinInet::InternetSetOption([System.IntPtr]::Zero, 39, [System.IntPtr]::Zero, 0)
+$null = $WinInet::InternetSetOption([System.IntPtr]::Zero, 37, [System.IntPtr]::Zero, 0)
+"#;
+
+    run_powershell(script, &[])?;
+    get_proxy_config_impl()
+}
+
+async fn run_blocking<T, F>(task: F) -> CommandResult<T>
+where
+    T: Send + 'static,
+    F: FnOnce() -> CommandResult<T> + Send + 'static,
+{
+    tauri::async_runtime::spawn_blocking(task)
+        .await
+        .map_err(|error| NetDockError::Task(error.to_string()))?
 }
 
 fn run_powershell_json(script: &str, args: &[String]) -> CommandResult<Value> {
@@ -329,15 +432,6 @@ fn run_powershell(script: &str, args: &[String]) -> CommandResult<String> {
         .arg("Bypass")
         .arg("-Command")
         .arg(utf8_script);
-
-    run_command(command)
-}
-
-fn run_native(program: &str, args: &[String]) -> CommandResult<String> {
-    let mut command = Command::new(program);
-    for arg in args {
-        command.arg(arg);
-    }
 
     run_command(command)
 }
@@ -457,7 +551,7 @@ fn build_loading_tray_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu
 fn build_tray_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
     let menu = Menu::new(app)?;
 
-    match list_adapter_statuses() {
+    match list_adapter_statuses_impl() {
         Ok(adapters) if adapters.is_empty() => {
             let empty = MenuItem::with_id(app, TRAY_LOADING_ID, "未发现网卡", false, None::<&str>)?;
             menu.append(&empty)?;
@@ -509,7 +603,7 @@ fn handle_tray_menu_event<R: Runtime + 'static>(app: &AppHandle<R>, event: tauri
 fn toggle_adapter_from_tray<R: Runtime + 'static>(app: &AppHandle<R>, adapter_name: String) {
     let app = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        let current_status = list_adapter_statuses().ok().and_then(|statuses| {
+        let current_status = list_adapter_statuses_impl().ok().and_then(|statuses| {
             statuses
                 .into_iter()
                 .find(|adapter| adapter.name == adapter_name)
@@ -561,6 +655,8 @@ fn is_enabled_adapter_status(status: &str) -> bool {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
             setup_tray(app)?;
             Ok(())
@@ -580,9 +676,9 @@ pub fn run() {
             list_dns_configs,
             set_dns_servers,
             clear_dns_servers,
-            list_vpn_profiles,
-            connect_vpn,
-            disconnect_vpn
+            get_proxy_config,
+            enable_proxy,
+            disable_proxy
         ])
         .run(tauri::generate_context!())
         .expect("error while running Net Dock");

@@ -1,4 +1,7 @@
 import { invoke } from '@tauri-apps/api/core'
+import { getVersion } from '@tauri-apps/api/app'
+import { relaunch } from '@tauri-apps/plugin-process'
+import { check, type DownloadEvent, type Update } from '@tauri-apps/plugin-updater'
 import {
   Alert,
   Button,
@@ -14,7 +17,19 @@ import {
   Tabs,
   toast,
 } from '@heroui/react'
-import { ArrowLeft, Check, ChevronDown, Pencil, RefreshCw, Settings as Gear, X } from 'lucide-react'
+import {
+  ArrowLeft,
+  Cable,
+  Check,
+  ChevronDown,
+  Download,
+  MoreHorizontal,
+  Pencil,
+  RefreshCw,
+  Search,
+  Settings as Gear,
+  X,
+} from 'lucide-react'
 import { useEffect, useState } from 'react'
 
 type Locale = 'zh' | 'en'
@@ -49,14 +64,23 @@ type AdapterOperationResult = {
   message: string
 }
 
-type VpnProfile = {
-  name: string
-  serverAddress?: string
-  tunnelType?: string
-  connectionStatus?: string
+type ProxyConfig = {
+  proxyEnable: boolean
+  proxyServer?: string
+  proxyOverride?: string
+  autoConfigUrl?: string
+  autoDetect: boolean
+  registryPath: string
+}
+
+type DownloadProgress = {
+  downloaded: number
+  total?: number
+  finished: boolean
 }
 
 const isTauriRuntime = '__TAURI_INTERNALS__' in window
+const fallbackAppVersion = '0.1.2'
 
 const localeStorageKey = 'net-dock-locale'
 
@@ -68,10 +92,44 @@ const messages = {
     languageDescription: '选择界面显示语言。',
     chinese: '简体中文',
     english: 'English',
+    updates: '应用更新',
+    updatesDescription: '检查是否有新版本，并在下载后自动安装重启。',
+    currentVersion: '当前版本',
+    latestVersion: '已是最新版本',
+    desktopOnlyUpdate: '自动更新仅在桌面应用中可用。',
+    checkUpdates: '检查版本',
+    checkingUpdates: '检查中',
+    downloadUpdate: '下载并安装',
+    downloadingUpdate: '下载中',
+    updateAvailable: (version: string) => `发现新版本 ${version}`,
+    updateAvailableDescription: (current: string, next: string) => `当前版本 ${current}，可更新到 ${next}。`,
+    updateInstalled: '更新已安装，正在重启应用。',
+    updateCheckFailed: '更新检查失败',
+    releaseNotes: '更新说明',
+    progress: '进度',
+    unknownSize: '大小未知',
     networkSections: '网络功能',
     adapters: '网卡',
     adapterCount: (count: number) => `${count} 网卡`,
-    vpnCount: (count: number) => `${count} VPN`,
+    proxy: '代理',
+    proxyControl: '代理',
+    proxyDescription: '从当前用户注册表读取 Windows 系统代理设置。',
+    proxyEnabled: '代理已启用',
+    proxyDisabled: '代理未启用',
+    enableProxy: '开启代理',
+    enablingProxy: '开启中',
+    disableProxy: '关闭代理',
+    disablingProxy: '关闭中',
+    proxyTurnedOn: '已开启代理',
+    proxyTurnedOff: '已关闭代理',
+    proxyServer: '代理服务器',
+    proxyOverride: '例外地址',
+    autoConfigUrl: '自动配置脚本',
+    autoDetect: '自动检测',
+    registryPath: '注册表',
+    notConfigured: '未配置',
+    yes: '是',
+    no: '否',
     refresh: '刷新',
     refreshing: '刷新中',
     statusRefreshed: '状态已刷新',
@@ -99,15 +157,6 @@ const messages = {
     currentConfig: '当前配置',
     dnsUpdated: (name: string) => `已更新 ${name} DNS`,
     dnsRestored: (name: string) => `已恢复 ${name} 自动 DNS`,
-    vpnControl: 'VPN 控制',
-    vpnDescription: '连接或断开 Windows 已保存的 VPN 配置。',
-    noVpns: '未发现 VPN 配置。',
-    vpnConnected: (name: string) => `已连接 VPN ${name}`,
-    vpnDisconnected: (name: string) => `已断开 VPN ${name}`,
-    noServerAddress: '未配置服务器地址',
-    tunnelType: '隧道类型',
-    connect: '连接',
-    disconnect: '断开',
     status: '状态',
     loadingNetwork: '读取网络状态',
   },
@@ -118,10 +167,44 @@ const messages = {
     languageDescription: 'Choose the interface display language.',
     chinese: '简体中文',
     english: 'English',
+    updates: 'App Updates',
+    updatesDescription: 'Check for new versions, then install and relaunch after download.',
+    currentVersion: 'Current version',
+    latestVersion: 'You are on the latest version',
+    desktopOnlyUpdate: 'Automatic updates are only available in the desktop app.',
+    checkUpdates: 'Check Version',
+    checkingUpdates: 'Checking',
+    downloadUpdate: 'Download and Install',
+    downloadingUpdate: 'Downloading',
+    updateAvailable: (version: string) => `Version ${version} is available`,
+    updateAvailableDescription: (current: string, next: string) => `Current version ${current}; update to ${next}.`,
+    updateInstalled: 'Update installed. Relaunching the app.',
+    updateCheckFailed: 'Update check failed',
+    releaseNotes: 'Release notes',
+    progress: 'Progress',
+    unknownSize: 'Unknown size',
     networkSections: 'Network sections',
     adapters: 'Adapters',
     adapterCount: (count: number) => `${count} adapters`,
-    vpnCount: (count: number) => `${count} VPN`,
+    proxy: 'Proxy',
+    proxyControl: 'Proxy',
+    proxyDescription: 'Read the current Windows system proxy from the user registry.',
+    proxyEnabled: 'Proxy enabled',
+    proxyDisabled: 'Proxy disabled',
+    enableProxy: 'Enable proxy',
+    enablingProxy: 'Enabling',
+    disableProxy: 'Disable proxy',
+    disablingProxy: 'Disabling',
+    proxyTurnedOn: 'Proxy enabled',
+    proxyTurnedOff: 'Proxy disabled',
+    proxyServer: 'Proxy server',
+    proxyOverride: 'Bypass list',
+    autoConfigUrl: 'Auto config script',
+    autoDetect: 'Auto detect',
+    registryPath: 'Registry',
+    notConfigured: 'Not configured',
+    yes: 'Yes',
+    no: 'No',
     refresh: 'Refresh',
     refreshing: 'Refreshing',
     statusRefreshed: 'Status refreshed',
@@ -149,15 +232,6 @@ const messages = {
     currentConfig: 'Current Config',
     dnsUpdated: (name: string) => `Updated DNS for ${name}`,
     dnsRestored: (name: string) => `Restored automatic DNS for ${name}`,
-    vpnControl: 'VPN Control',
-    vpnDescription: 'Connect or disconnect saved Windows VPN profiles.',
-    noVpns: 'No VPN profiles found.',
-    vpnConnected: (name: string) => `Connected VPN ${name}`,
-    vpnDisconnected: (name: string) => `Disconnected VPN ${name}`,
-    noServerAddress: 'No server address configured',
-    tunnelType: 'Tunnel type',
-    connect: 'Connect',
-    disconnect: 'Disconnect',
     status: 'Status',
     loadingNetwork: 'Reading network status',
   },
@@ -180,12 +254,13 @@ export default function App() {
   const [page, setPage] = useState<Page>('home')
   const [adapters, setAdapters] = useState<Adapter[]>([])
   const [dnsConfigs, setDnsConfigs] = useState<DnsConfig[]>([])
-  const [vpns, setVpns] = useState<VpnProfile[]>([])
+  const [proxyConfig, setProxyConfig] = useState<ProxyConfig | null>(null)
   const [selectedDnsInterface, setSelectedDnsInterface] = useState('')
   const [dnsInput, setDnsInput] = useState('')
   const [loading, setLoading] = useState(false)
   const [adapterActionName, setAdapterActionName] = useState<string | null>(null)
   const [renamingAdapterName, setRenamingAdapterName] = useState<string | null>(null)
+  const [isProxyActionPending, setIsProxyActionPending] = useState(false)
   const [activeTab, setActiveTab] = useState('adapters')
 
   const t = messages[locale]
@@ -249,10 +324,10 @@ export default function App() {
     await runRefreshTask(task, notify, showLoading)
   }
 
-  async function refreshVpnProfiles(notify = false, showLoading = true) {
+  async function refreshProxyConfig(notify = false, showLoading = true) {
     const task = async () => {
-      const nextVpns = await listVpnProfiles()
-      setVpns(nextVpns)
+      const nextProxyConfig = await getProxyConfig()
+      setProxyConfig(nextProxyConfig)
     }
 
     await runRefreshTask(task, notify, showLoading)
@@ -264,12 +339,72 @@ export default function App() {
       return
     }
 
-    if (activeTab === 'vpn') {
-      await refreshVpnProfiles(notify, showLoading)
+    if (activeTab === 'proxy') {
+      await refreshProxyConfig(notify, showLoading)
       return
     }
 
     await refreshAdapters(notify, showLoading)
+  }
+
+  async function disableProxy() {
+    try {
+      setIsProxyActionPending(true)
+
+      if (isTauriRuntime) {
+        const nextProxyConfig = await invoke<ProxyConfig>('disable_proxy')
+        setProxyConfig(nextProxyConfig)
+      } else {
+        setProxyConfig(currentConfig =>
+          currentConfig
+            ? { ...currentConfig, proxyEnable: false }
+            : {
+                proxyEnable: false,
+                proxyServer: '',
+                proxyOverride: '',
+                autoConfigUrl: '',
+                autoDetect: false,
+                registryPath: 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings',
+              },
+        )
+      }
+
+      toast.success(t.proxyTurnedOff)
+    } catch (error) {
+      toast.danger(error instanceof Error ? error.message : String(error))
+    } finally {
+      setIsProxyActionPending(false)
+    }
+  }
+
+  async function enableProxy() {
+    try {
+      setIsProxyActionPending(true)
+
+      if (isTauriRuntime) {
+        const nextProxyConfig = await invoke<ProxyConfig>('enable_proxy')
+        setProxyConfig(nextProxyConfig)
+      } else {
+        setProxyConfig(currentConfig =>
+          currentConfig
+            ? { ...currentConfig, proxyEnable: true }
+            : {
+                proxyEnable: true,
+                proxyServer: '127.0.0.1:7890',
+                proxyOverride: '',
+                autoConfigUrl: '',
+                autoDetect: false,
+                registryPath: 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings',
+              },
+        )
+      }
+
+      toast.success(t.proxyTurnedOn)
+    } catch (error) {
+      toast.danger(error instanceof Error ? error.message : String(error))
+    } finally {
+      setIsProxyActionPending(false)
+    }
   }
 
   async function toggleAdapter(name: string, enable: boolean) {
@@ -369,15 +504,6 @@ export default function App() {
     }, t.dnsRestored(selectedDnsInterface))
   }
 
-  async function toggleVpn(name: string, connect: boolean) {
-    await withLoading(async () => {
-      if (isTauriRuntime) {
-        await invoke(connect ? 'connect_vpn' : 'disconnect_vpn', { name })
-      }
-      await refreshVpnProfiles(false, false)
-    }, connect ? t.vpnConnected(name) : t.vpnDisconnected(name))
-  }
-
   async function withLoading(task: () => Promise<void>, successMessage?: string) {
     try {
       setLoading(true)
@@ -401,8 +527,8 @@ export default function App() {
       void refreshDnsConfigs(false)
     }
 
-    if (activeTab === 'vpn' && vpns.length === 0) {
-      void refreshVpnProfiles(false)
+    if (activeTab === 'proxy' && !proxyConfig) {
+      void refreshProxyConfig(false)
     }
   }, [activeTab])
 
@@ -430,53 +556,47 @@ export default function App() {
   return (
     <main className="min-h-screen bg-white text-slate-900">
       <section className="mx-auto flex min-h-screen max-w-7xl flex-col gap-5 px-5 py-5">
-        <header className="flex items-center justify-between gap-6 max-lg:flex-wrap">
-          <div className="flex shrink-0 items-center gap-3">
-            <div className="grid h-11 w-11 place-items-center rounded-lg bg-amber-300 font-black text-slate-950">
-              ND
+        <Tabs selectedKey={activeTab} onSelectionChange={key => setActiveTab(key.toString())} className="w-full">
+          <header className="flex items-center justify-between gap-6 max-lg:flex-wrap">
+            <div className="flex shrink-0 items-center gap-3">
+              <div className="grid h-11 w-11 place-items-center rounded-lg bg-amber-300 font-black text-slate-950">
+                ND
+              </div>
+              <div>
+                <p className="text-xs font-bold uppercase tracking-[0.18em] text-slate-500">{t.appSubtitle}</p>
+                <h1 className="font-['Avenir_Next',_'Segoe_UI',_sans-serif] text-xl font-semibold">Net Dock</h1>
+              </div>
             </div>
-            <div>
-              <p className="text-xs font-bold uppercase tracking-[0.18em] text-slate-500">{t.appSubtitle}</p>
-              <h1 className="font-['Avenir_Next',_'Segoe_UI',_sans-serif] text-xl font-semibold">Net Dock</h1>
-            </div>
-          </div>
 
-          <div className="flex min-w-0 flex-1 items-center justify-end gap-3 max-lg:w-full max-lg:flex-wrap">
-            <Tabs
-              className="w-full max-w-md"
-              selectedKey={activeTab}
-              onSelectionChange={key => setActiveTab(key.toString())}
-            >
-              <Tabs.ListContainer>
+            <div className="flex min-w-0 flex-1 items-center justify-end gap-3 max-lg:w-full max-lg:flex-wrap">
+              <Tabs.ListContainer className="w-full max-w-md">
                 <Tabs.List aria-label={t.networkSections}>
                   <Tabs.Tab id="adapters">
                     {t.adapters}
+                    <Tabs.Indicator />
+                  </Tabs.Tab>
+                  <Tabs.Tab id="proxy">
+                    {t.proxy}
                     <Tabs.Indicator />
                   </Tabs.Tab>
                   <Tabs.Tab id="dns">
                     DNS
                     <Tabs.Indicator />
                   </Tabs.Tab>
-                  <Tabs.Tab id="vpn">
-                    VPN
-                    <Tabs.Indicator />
-                  </Tabs.Tab>
                 </Tabs.List>
               </Tabs.ListContainer>
-            </Tabs>
 
-            <Button isIconOnly variant="secondary" aria-label={t.settings} onPress={() => setPage('settings')}>
-              <Gear size={18} />
-            </Button>
-          </div>
-        </header>
+              <Button isIconOnly variant="secondary" aria-label={t.settings} onPress={() => setPage('settings')}>
+                <Gear size={18} />
+              </Button>
+            </div>
+          </header>
 
-        <Tabs selectedKey={activeTab} onSelectionChange={key => setActiveTab(key.toString())} className="w-full">
           <Tabs.Panel id="adapters" className="pt-0">
             {loading && adapters.length === 0 ? (
               <EmptyLoading label={t.loadingNetwork} />
             ) : (
-              <div className="grid grid-cols-[repeat(auto-fit,minmax(280px,1fr))] gap-3">
+              <ul className="m-0 grid grid-cols-[repeat(auto-fill,minmax(330px,1fr))] gap-6 p-0">
                 {adapters.map(adapter => (
                   <AdapterCard
                     key={adapter.name}
@@ -487,7 +607,23 @@ export default function App() {
                     onToggle={toggleAdapter}
                   />
                 ))}
-              </div>
+              </ul>
+            )}
+          </Tabs.Panel>
+
+          <Tabs.Panel id="proxy" className="pt-0">
+            {loading && !proxyConfig ? (
+              <EmptyLoading label={t.loadingNetwork} />
+            ) : proxyConfig ? (
+              <ProxyCard
+                proxyConfig={proxyConfig}
+                isPending={isProxyActionPending}
+                labels={t}
+                onEnable={() => void enableProxy()}
+                onDisable={() => void disableProxy()}
+              />
+            ) : (
+              <p className="text-sm text-slate-500">{t.notConfigured}</p>
             )}
           </Tabs.Panel>
 
@@ -564,26 +700,6 @@ export default function App() {
             </Card>
           </Tabs.Panel>
 
-          <Tabs.Panel id="vpn" className="pt-0">
-            <Card variant="default" className="border border-slate-200/80 shadow-sm">
-              <Card.Header>
-                <Card.Title>{t.vpnControl}</Card.Title>
-                <Card.Description>{t.vpnDescription}</Card.Description>
-              </Card.Header>
-              <Separator />
-              <Card.Content className="pt-4">
-                {vpns.length === 0 ? (
-                  <p className="text-sm text-slate-500">{t.noVpns}</p>
-                ) : (
-                  <div className="grid grid-cols-[repeat(auto-fit,minmax(280px,1fr))] gap-3">
-                    {vpns.map(vpn => (
-                      <VpnCard key={vpn.name} vpn={vpn} labels={t} onToggle={toggleVpn} />
-                    ))}
-                  </div>
-                )}
-              </Card.Content>
-            </Card>
-          </Tabs.Panel>
         </Tabs>
       </section>
       <Button
@@ -610,6 +726,84 @@ function SettingsPage({
   onBack: () => void
   onChangeLocale: (locale: Locale) => void
 }) {
+  const [currentVersion, setCurrentVersion] = useState(fallbackAppVersion)
+  const [availableUpdate, setAvailableUpdate] = useState<Update | null>(null)
+  const [isCheckingUpdate, setIsCheckingUpdate] = useState(false)
+  const [isInstallingUpdate, setIsInstallingUpdate] = useState(false)
+  const [downloadProgress, setDownloadProgress] = useState<DownloadProgress | null>(null)
+  const [updateError, setUpdateError] = useState('')
+  const hasUpdate = Boolean(availableUpdate)
+  const progressPercent = downloadProgress?.total
+    ? Math.min(100, Math.round((downloadProgress.downloaded / downloadProgress.total) * 100))
+    : null
+
+  async function checkForUpdates() {
+    if (!isTauriRuntime) {
+      setAvailableUpdate(null)
+      setUpdateError(labels.desktopOnlyUpdate)
+      toast.warning(labels.desktopOnlyUpdate)
+      return
+    }
+
+    try {
+      setIsCheckingUpdate(true)
+      setUpdateError('')
+      setDownloadProgress(null)
+
+      const update = await check()
+      setAvailableUpdate(update)
+
+      if (update) {
+        toast.success(labels.updateAvailable(update.version))
+      } else {
+        toast.success(labels.latestVersion)
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      setUpdateError(message)
+      toast.danger(message)
+    } finally {
+      setIsCheckingUpdate(false)
+    }
+  }
+
+  async function downloadAndInstallUpdate() {
+    if (!availableUpdate) {
+      return
+    }
+
+    try {
+      setIsInstallingUpdate(true)
+      setUpdateError('')
+      setDownloadProgress({ downloaded: 0, finished: false })
+
+      await availableUpdate.downloadAndInstall(event => {
+        setDownloadProgress(currentProgress => nextDownloadProgress(currentProgress, event))
+      })
+
+      toast.success(labels.updateInstalled)
+      await relaunch()
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      setUpdateError(message)
+      toast.danger(message)
+    } finally {
+      setIsInstallingUpdate(false)
+    }
+  }
+
+  useEffect(() => {
+    if (!isTauriRuntime) {
+      return
+    }
+
+    void getVersion()
+      .then(setCurrentVersion)
+      .catch(error => {
+        console.warn('[net-dock] failed to read app version', error)
+      })
+  }, [])
+
   return (
     <main className="min-h-screen bg-white text-slate-900">
       <section className="mx-auto flex min-h-screen max-w-7xl flex-col gap-8 px-5 py-5">
@@ -652,6 +846,82 @@ function SettingsPage({
             </Tabs.ListContainer>
           </Tabs>
         </div>
+
+        <div className="grid max-w-lg gap-3">
+          <div className="grid gap-1">
+            <h2 className="text-base font-semibold">{labels.updates}</h2>
+            <p className="text-sm text-slate-500">{labels.updatesDescription}</p>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2">
+            <Chip color={hasUpdate ? 'accent' : 'default'} variant="soft">
+              {labels.currentVersion} {currentVersion}
+            </Chip>
+            {availableUpdate ? (
+              <Chip color="accent" variant="soft">
+                {labels.updateAvailable(availableUpdate.version)}
+              </Chip>
+            ) : null}
+          </div>
+
+          <p className={`text-sm ${updateError ? 'text-red-600' : availableUpdate ? 'text-slate-700' : 'text-slate-500'}`}>
+            {availableUpdate
+              ? labels.updateAvailableDescription(currentVersion, availableUpdate.version)
+              : updateError
+                ? `${labels.updateCheckFailed}: ${updateError}`
+                : labels.latestVersion}
+          </p>
+
+          {availableUpdate?.body ? (
+            <div className="grid gap-1">
+              <h3 className="text-sm font-semibold">{labels.releaseNotes}</h3>
+              <p className="whitespace-pre-wrap text-sm text-slate-600">{availableUpdate.body}</p>
+            </div>
+          ) : null}
+
+          {downloadProgress ? (
+            <div className="grid gap-2">
+              <div className="flex items-center justify-between gap-3 text-sm">
+                <span className="font-medium text-slate-700">{labels.progress}</span>
+                <span className="text-slate-500">
+                  {progressPercent === null
+                    ? `${formatBytes(downloadProgress.downloaded)} / ${labels.unknownSize}`
+                    : `${progressPercent}%`}
+                </span>
+              </div>
+              <div className="h-2 overflow-hidden rounded-full bg-slate-100">
+                <div
+                  className="h-full rounded-full bg-slate-900 transition-[width]"
+                  style={{ width: `${progressPercent ?? (downloadProgress.finished ? 100 : 40)}%` }}
+                />
+              </div>
+            </div>
+          ) : null}
+
+          <div className="flex flex-wrap gap-2">
+            <Button variant="secondary" isPending={isCheckingUpdate} onPress={() => void checkForUpdates()}>
+              {({ isPending }) => (
+                <>
+                  {isPending ? <Spinner color="current" size="sm" /> : <Search size={16} />}
+                  {isPending ? labels.checkingUpdates : labels.checkUpdates}
+                </>
+              )}
+            </Button>
+            <Button
+              variant="primary"
+              isDisabled={!availableUpdate || isCheckingUpdate}
+              isPending={isInstallingUpdate}
+              onPress={() => void downloadAndInstallUpdate()}
+            >
+              {({ isPending }) => (
+                <>
+                  {isPending ? <Spinner color="current" size="sm" /> : <Download size={16} />}
+                  {isPending ? labels.downloadingUpdate : labels.downloadUpdate}
+                </>
+              )}
+            </Button>
+          </div>
+        </div>
       </section>
     </main>
   )
@@ -671,7 +941,6 @@ function AdapterCard({
   onToggle: (name: string, enable: boolean) => Promise<void>
 }) {
   const isUp = adapter.status?.toLowerCase() === 'up'
-  const isDisconnected = adapter.status?.toLowerCase() === 'disconnected'
   const [isEditing, setIsEditing] = useState(false)
   const [draftName, setDraftName] = useState(adapter.name)
 
@@ -686,15 +955,22 @@ function AdapterCard({
   }
 
   return (
-    <Card variant="default" className="relative overflow-hidden border border-slate-200/80 bg-white shadow-sm">
+    <li className="relative flex min-h-[202px] list-none flex-col gap-3 rounded-lg border border-[#dcdcdc] bg-white p-4 leading-5 shadow-[0_1px_2px_rgba(0,0,0,0.08)] transition-colors hover:border-gray-500">
       {isPending ? (
-        <div className="absolute inset-0 z-10 grid place-items-center bg-white/70 backdrop-blur-[1px]">
+        <div className="absolute inset-0 z-20 grid place-items-center rounded-lg bg-white/70 backdrop-blur-[1px]">
           <Spinner />
         </div>
       ) : null}
-      <Card.Content className="grid gap-4">
-        <div className="flex justify-between gap-3">
-          <div className="min-w-0 flex-1">
+
+      <div className="flex flex-row items-center gap-4">
+        <div className="relative inline-flex h-8 w-8 shrink-0">
+          <div className="grid h-8 w-8 place-items-center rounded-full bg-slate-950 text-white">
+            <Cable size={16} />
+          </div>
+        </div>
+
+        <div className="flex min-w-0 flex-1 flex-col justify-between gap-0.5">
+          <div className="min-w-0">
             {isEditing ? (
               <div className="flex items-center gap-2">
                 <Input
@@ -732,10 +1008,10 @@ function AdapterCard({
               </div>
             ) : (
               <div className="flex min-w-0 items-center gap-2">
-                <h4 className="truncate font-semibold">{adapter.name}</h4>
+                <h4 className="h-5 min-w-0 max-w-full truncate text-sm font-medium leading-5 text-slate-950">{adapter.name}</h4>
                 <Button
                   aria-label="Rename adapter"
-                  className="h-7 w-7 shrink-0 p-0"
+                  className="z-10 h-6 w-6 shrink-0 p-0"
                   size="sm"
                   variant="ghost"
                   onPress={() => setIsEditing(true)}
@@ -744,8 +1020,29 @@ function AdapterCard({
                 </Button>
               </div>
             )}
-            <p className="text-sm text-slate-500">{adapter.interfaceDescription ?? labels.unknownAdapter}</p>
+            <p className="h-5 w-fit max-w-full truncate text-sm leading-5 text-slate-600">
+              {adapter.interfaceDescription ?? labels.unknownAdapter}
+            </p>
           </div>
+        </div>
+
+        <Button aria-label={labels.status} className="z-10 hidden h-8 w-8 shrink-0 p-0" size="sm" variant="ghost">
+          <MoreHorizontal size={18} />
+        </Button>
+      </div>
+
+      <div className="flex h-5 w-fit items-center gap-2">
+        <Chip className="max-w-48" variant="soft">
+          {labels.ipAddress}: {adapter.ipAddresses.length > 0 ? adapter.ipAddresses.join(', ') : '-'}
+        </Chip>
+      </div>
+
+      <div className="flex min-w-0 flex-col justify-between gap-0.5">
+        <p className="h-5 min-w-0 truncate text-sm font-medium leading-5 text-slate-950">
+          {labels.cableName}: <span className="font-mono text-sm font-normal text-slate-600">{adapter.connectionSpecificSuffix || '-'}</span>
+        </p>
+        <div className="flex h-5 flex-row items-center gap-2">
+          <span className="flex-none text-sm text-slate-600">{adapter.status ?? 'Unknown'}</span>
           <Switch
             aria-label={`${adapter.name} ${labels.status}`}
             isSelected={isUp}
@@ -756,63 +1053,96 @@ function AdapterCard({
             <Switch.Control>
               <Switch.Thumb />
             </Switch.Control>
-            <Switch.Content className="inline-flex items-center gap-2 text-sm font-medium text-slate-600">
-              {adapter.status ?? 'Unknown'}
-              {isDisconnected ? <Spinner size="sm" /> : null}
-            </Switch.Content>
+            <Switch.Content className="text-sm text-slate-600">{isUp ? labels.enable : labels.disable}</Switch.Content>
           </Switch>
         </div>
-        <div className="grid gap-2 text-sm">
-          <Meta label={labels.ipAddress} value={adapter.ipAddresses.length > 0 ? adapter.ipAddresses.join(', ') : '-'} />
-          <Meta label={labels.cableName} value={adapter.connectionSpecificSuffix ?? '-'} />
-        </div>
-      </Card.Content>
-    </Card>
+      </div>
+    </li>
   )
 }
 
-function VpnCard({
-  vpn,
+function ProxyCard({
+  proxyConfig,
+  isPending,
   labels,
-  onToggle,
+  onEnable,
+  onDisable,
 }: {
-  vpn: VpnProfile
+  proxyConfig: ProxyConfig
+  isPending: boolean
   labels: Messages
-  onToggle: (name: string, connect: boolean) => Promise<void>
+  onEnable: () => void
+  onDisable: () => void
 }) {
-  const connected = vpn.connectionStatus?.toLowerCase() === 'connected'
+  const enabled = proxyConfig.proxyEnable
 
   return (
-    <Card variant="secondary" className="border border-slate-200/80">
-      <Card.Content className="grid gap-4">
-        <div className="flex justify-between gap-3">
-          <div>
-            <h4 className="font-semibold">{vpn.name}</h4>
-            <p className="text-sm text-slate-500">{vpn.serverAddress ?? labels.noServerAddress}</p>
+    <ul className="m-0 grid grid-cols-[repeat(auto-fill,minmax(330px,1fr))] gap-6 p-0">
+      <li className="relative flex min-h-[202px] list-none flex-col gap-3 rounded-lg border border-[#dcdcdc] bg-white p-4 leading-5 shadow-[0_1px_2px_rgba(0,0,0,0.08)] transition-colors hover:border-gray-500">
+        <div className="flex flex-row items-center gap-4">
+          <div className="relative inline-flex h-8 w-8 shrink-0">
+            <div className="grid h-8 w-8 place-items-center rounded-full bg-slate-950 text-white">
+              <Gear size={16} />
+            </div>
           </div>
-          <Chip variant="soft" color={connected ? 'success' : 'default'}>
-            {vpn.connectionStatus ?? 'Unknown'}
+
+          <div className="flex min-w-0 flex-1 flex-col justify-between gap-0.5">
+            <h4 className="h-5 min-w-0 max-w-full truncate text-sm font-medium leading-5 text-slate-950">{labels.proxyControl}</h4>
+            <p className="h-5 w-fit max-w-full truncate text-sm leading-5 text-slate-600">{labels.proxyDescription}</p>
+          </div>
+
+          <Button aria-label={labels.status} className="z-10 hidden h-8 w-8 shrink-0 p-0" size="sm" variant="ghost">
+            <MoreHorizontal size={18} />
+          </Button>
+        </div>
+
+        <div className="flex h-5 w-fit items-center gap-2">
+          <Chip variant="soft" color={enabled ? 'success' : 'default'}>
+            {enabled ? labels.proxyEnabled : labels.proxyDisabled}
           </Chip>
+          <Chip variant="soft">{labels.autoDetect}: {proxyConfig.autoDetect ? labels.yes : labels.no}</Chip>
         </div>
-        <Meta label={labels.tunnelType} value={vpn.tunnelType ?? '-'} />
-        <div className="flex flex-wrap gap-2">
-          <Button size="sm" variant="primary" onPress={() => onToggle(vpn.name, true)}>
-            {labels.connect}
-          </Button>
-          <Button size="sm" variant="secondary" onPress={() => onToggle(vpn.name, false)}>
-            {labels.disconnect}
+
+        <div className="flex min-w-0 flex-col justify-between gap-0.5">
+          <p className="h-5 min-w-0 truncate text-sm font-medium leading-5 text-slate-950">
+            {labels.proxyServer}: <span className="font-mono text-sm font-normal text-slate-600">{proxyConfig.proxyServer || labels.notConfigured}</span>
+          </p>
+          <p className="h-5 min-w-0 truncate text-sm leading-5 text-slate-600">
+            {labels.autoConfigUrl}: {proxyConfig.autoConfigUrl || labels.notConfigured}
+          </p>
+          <p className="h-5 min-w-0 truncate text-sm leading-5 text-slate-600">
+            {labels.proxyOverride}: {proxyConfig.proxyOverride || labels.notConfigured}
+          </p>
+          <p className="h-5 min-w-0 truncate text-sm leading-5 text-slate-600">
+            {labels.registryPath}: <span className="font-mono">{proxyConfig.registryPath}</span>
+          </p>
+        </div>
+
+        <div className="mt-auto flex h-8 items-center justify-end">
+          <Button
+            size="sm"
+            variant="secondary"
+            isPending={isPending}
+            onPress={enabled ? onDisable : onEnable}
+          >
+            {({ isPending }) => (
+              <>
+                {isPending ? <Spinner color="current" size="sm" /> : null}
+                {isPending ? (enabled ? labels.disablingProxy : labels.enablingProxy) : (enabled ? labels.disableProxy : labels.enableProxy)}
+              </>
+            )}
           </Button>
         </div>
-      </Card.Content>
-    </Card>
+      </li>
+    </ul>
   )
 }
 
 function Meta({ label, value }: { label: string; value: string }) {
   return (
     <div className="flex justify-between gap-3">
-      <span className="text-slate-500">{label}</span>
-      <span className="break-all text-right text-slate-700">{value}</span>
+      <span className="shrink-0 whitespace-nowrap text-slate-500">{label}</span>
+      <span className="min-w-0 break-all text-right text-slate-700">{value}</span>
     </div>
   )
 }
@@ -834,6 +1164,42 @@ function dnsConfigText(config: DnsConfig | undefined, automaticLabel: string) {
   }
 
   return config.serverAddresses.join(', ')
+}
+
+function nextDownloadProgress(currentProgress: DownloadProgress | null, event: DownloadEvent): DownloadProgress {
+  if (event.event === 'Started') {
+    return {
+      downloaded: 0,
+      total: event.data.contentLength,
+      finished: false,
+    }
+  }
+
+  if (event.event === 'Progress') {
+    return {
+      downloaded: (currentProgress?.downloaded ?? 0) + event.data.chunkLength,
+      total: currentProgress?.total,
+      finished: false,
+    }
+  }
+
+  return {
+    downloaded: currentProgress?.total ?? currentProgress?.downloaded ?? 0,
+    total: currentProgress?.total,
+    finished: true,
+  }
+}
+
+function formatBytes(value: number) {
+  if (value < 1024) {
+    return `${value} B`
+  }
+
+  if (value < 1024 * 1024) {
+    return `${(value / 1024).toFixed(1)} KB`
+  }
+
+  return `${(value / 1024 / 1024).toFixed(1)} MB`
 }
 
 async function listAdapters() {
@@ -885,17 +1251,17 @@ async function listDnsConfigs() {
   ]
 }
 
-async function listVpnProfiles() {
+async function getProxyConfig() {
   if (isTauriRuntime) {
-    return invoke<VpnProfile[]>('list_vpn_profiles')
+    return invoke<ProxyConfig>('get_proxy_config')
   }
 
-  return [
-    {
-      name: 'Office VPN',
-      serverAddress: 'vpn.example.com',
-      tunnelType: 'Automatic',
-      connectionStatus: 'Disconnected',
-    },
-  ]
+  return {
+    proxyEnable: true,
+    proxyServer: '127.0.0.1:7890',
+    proxyOverride: '<local>',
+    autoConfigUrl: '',
+    autoDetect: false,
+    registryPath: 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings',
+  }
 }
