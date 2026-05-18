@@ -1,0 +1,11 @@
+{
+  "version": "0.1.4",
+  "notes": "优化网卡卡片布局；修复多张网卡同时操作时 loading 状态互相覆盖的问题；Disconnected 状态后增加 loading 提示。",
+  "pub_date": "2026-05-18T05:22:10Z",
+  "platforms": {
+    "windows-x86_64": {
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSWGFHR0o0MWFqdUdxaENUbHVTUEd2d1JXYXNkTlNlcG9KaGU3dTU5bkFxd0Uvd1gxam4yUDlHM09BRTQrdUx6d1ZmWEtMaU5DTTBuQjJkV1NCelhWdW1jQzF2YnBoOVFRPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzc5MDgxNzE2CWZpbGU6TmV0IERvY2tfMC4xLjRfeDY0LXNldHVwLmV4ZQpkTVhSNUJFRTR3NU1RMmVpNnJYR1Q5N1VQVXdKUjB5RjU0RkVFUE9lZzlKSTlhMHplcFVjK0x2VExpZDNkL290cnMwWXUrNjd3NVBOVjJva3cwaUhDQT09Cg==",
+      "url": "https://github.com/mapinxue/net-dock/releases/download/v0.1.4/Net%20Dock_0.1.4_x64-setup.exe"
+    }
+  }
+}
