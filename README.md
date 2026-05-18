@@ -2,56 +2,21 @@
 
 [简体中文](docs/README.zh-CN.md)
 
-Net Dock is a Windows desktop network utility built with Tauri. It focuses on day-to-day adapter switching, network status inspection, proxy inspection, and DNS control.
-
-> Status: actively iterating. Some DNS workflows are still marked as WIP in the app.
-
-![Net Dock screenshot](docs/screenshot.png)
+Net Dock is a Windows desktop network utility for everyday adapter, proxy, and DNS management.
 
 ## Features
 
-- View Windows network adapters with status, IPv4 address, and connection-specific DNS suffix.
-- Enable or disable adapters with an inline switch.
-- Rename adapters directly from each adapter card.
-- Auto-refresh adapter status during transient states such as `Disconnected`.
-- Manually refresh the current view from a floating refresh button.
-- Switch UI language between English and Simplified Chinese.
-- Read the current Windows proxy settings from the user registry.
-- Read IPv4 DNS configuration.
-- Set static DNS servers or restore automatic DNS.
-- Request administrator permission on launch for network operations.
+- View Windows network adapters, IP addresses, status, and connection details.
+- Enable, disable, and rename network adapters from adapter cards.
+- Inspect Windows proxy settings.
+- View and manage IPv4 DNS configuration.
+- Refresh network state from the app UI.
+- Switch between English and Simplified Chinese.
 
-## Install
+## Screenshot
 
-Download the portable Windows zip from the GitHub Releases page, unzip it, and run `net-dock.exe`.
+![Net Dock screenshot](docs/screenshot.png)
 
-Adapter and DNS operations usually require administrator permission. Net Dock requests Windows UAC elevation when it starts.
+## Release
 
-## Development
-
-This project uses Tauri v2, Vite, React, TypeScript, and Rust.
-
-```powershell
-npm install
-npm run tauri dev
-```
-
-Build a portable executable:
-
-```powershell
-npm run tauri -- build --no-bundle
-```
-
-Build an installer when NSIS or WiX is available:
-
-```powershell
-npm run tauri -- build --bundles nsis
-```
-
-## Release Updates
-
-See the Chinese guide for the current updater release workflow: [发布更新教程](docs/release-updates.zh-CN.md).
-
-## Notes
-
-Net Dock currently uses PowerShell commands such as `Get-NetAdapter`, `Get-NetIPAddress`, `Get-DnsClient`, and `Rename-NetAdapter` behind the Tauri backend. Proxy status is read from `HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings`. The adapter status auto-refresh path uses a lighter status-only query to reduce refresh overhead.
+Download the latest version from [GitHub Releases](https://github.com/mapinxue/net-dock/releases).
