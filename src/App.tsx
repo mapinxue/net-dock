@@ -258,7 +258,7 @@ export default function App() {
   const [selectedDnsInterface, setSelectedDnsInterface] = useState('')
   const [dnsInput, setDnsInput] = useState('')
   const [loading, setLoading] = useState(false)
-  const [adapterActionName, setAdapterActionName] = useState<string | null>(null)
+  const [pendingAdapterActionNames, setPendingAdapterActionNames] = useState<Set<string>>(() => new Set())
   const [renamingAdapterName, setRenamingAdapterName] = useState<string | null>(null)
   const [isProxyActionPending, setIsProxyActionPending] = useState(false)
   const [activeTab, setActiveTab] = useState('adapters')
@@ -409,7 +409,7 @@ export default function App() {
 
   async function toggleAdapter(name: string, enable: boolean) {
     try {
-      setAdapterActionName(name)
+      setPendingAdapterActionNames(currentNames => new Set(currentNames).add(name))
       let result: AdapterOperationResult | null = null
 
       if (isTauriRuntime) {
@@ -442,7 +442,11 @@ export default function App() {
     } catch (error) {
       toast.danger(error instanceof Error ? error.message : String(error))
     } finally {
-      setAdapterActionName(null)
+      setPendingAdapterActionNames(currentNames => {
+        const nextNames = new Set(currentNames)
+        nextNames.delete(name)
+        return nextNames
+      })
     }
   }
 
@@ -556,7 +560,7 @@ export default function App() {
   return (
     <main className="min-h-screen bg-white text-slate-900">
       <section className="mx-auto flex min-h-screen max-w-7xl flex-col gap-5 px-5 py-5">
-        <Tabs selectedKey={activeTab} onSelectionChange={key => setActiveTab(key.toString())} className="w-full">
+        <Tabs selectedKey={activeTab} onSelectionChange={key => setActiveTab(key.toString())} className="flex w-full flex-col gap-12">
           <header className="flex items-center justify-between gap-6 max-lg:flex-wrap">
             <div className="flex shrink-0 items-center gap-3">
               <div className="grid h-11 w-11 place-items-center rounded-lg bg-amber-300 font-black text-slate-950">
@@ -601,7 +605,7 @@ export default function App() {
                   <AdapterCard
                     key={adapter.name}
                     adapter={adapter}
-                    isPending={adapterActionName === adapter.name || renamingAdapterName === adapter.name}
+                    isPending={pendingAdapterActionNames.has(adapter.name) || renamingAdapterName === adapter.name}
                     labels={t}
                     onRename={renameAdapter}
                     onToggle={toggleAdapter}
@@ -941,6 +945,7 @@ function AdapterCard({
   onToggle: (name: string, enable: boolean) => Promise<void>
 }) {
   const isUp = adapter.status?.toLowerCase() === 'up'
+  const isDisconnected = adapter.status === 'Disconnected'
   const [isEditing, setIsEditing] = useState(false)
   const [draftName, setDraftName] = useState(adapter.name)
 
@@ -955,24 +960,24 @@ function AdapterCard({
   }
 
   return (
-    <li className="relative flex min-h-[202px] list-none flex-col gap-3 rounded-lg border border-[#dcdcdc] bg-white p-4 leading-5 shadow-[0_1px_2px_rgba(0,0,0,0.08)] transition-colors hover:border-gray-500">
+    <li className="relative flex min-h-[238px] list-none flex-col gap-5 rounded-lg border border-[#dcdcdc] bg-white p-5 leading-6 shadow-[0_1px_2px_rgba(0,0,0,0.08)] transition-colors hover:border-gray-500">
       {isPending ? (
         <div className="absolute inset-0 z-20 grid place-items-center rounded-lg bg-white/70 backdrop-blur-[1px]">
           <Spinner />
         </div>
       ) : null}
 
-      <div className="flex flex-row items-center gap-4">
-        <div className="relative inline-flex h-8 w-8 shrink-0">
-          <div className="grid h-8 w-8 place-items-center rounded-full bg-slate-950 text-white">
-            <Cable size={16} />
+      <div className="flex flex-row items-start gap-3">
+        <div className="relative inline-flex h-10 w-10 shrink-0">
+          <div className="grid h-10 w-10 place-items-center rounded-full bg-slate-950 text-white">
+            <Cable size={18} />
           </div>
         </div>
 
-        <div className="flex min-w-0 flex-1 flex-col justify-between gap-0.5">
+        <div className="flex min-w-0 flex-1 flex-col justify-between gap-1">
           <div className="min-w-0">
             {isEditing ? (
-              <div className="flex items-center gap-2">
+              <div className="flex min-w-0 items-center gap-2">
                 <Input
                   aria-label={labels.cableName}
                   className="min-w-0 flex-1"
@@ -1008,10 +1013,10 @@ function AdapterCard({
               </div>
             ) : (
               <div className="flex min-w-0 items-center gap-2">
-                <h4 className="h-5 min-w-0 max-w-full truncate text-sm font-medium leading-5 text-slate-950">{adapter.name}</h4>
+                <h4 className="min-w-0 max-w-full truncate text-base font-semibold leading-6 text-slate-950">{adapter.name}</h4>
                 <Button
                   aria-label="Rename adapter"
-                  className="z-10 h-6 w-6 shrink-0 p-0"
+                  className="z-10 h-7 w-7 shrink-0 p-0"
                   size="sm"
                   variant="ghost"
                   onPress={() => setIsEditing(true)}
@@ -1020,7 +1025,7 @@ function AdapterCard({
                 </Button>
               </div>
             )}
-            <p className="h-5 w-fit max-w-full truncate text-sm leading-5 text-slate-600">
+            <p className="mt-1 w-fit max-w-full truncate text-sm leading-5 text-slate-600">
               {adapter.interfaceDescription ?? labels.unknownAdapter}
             </p>
           </div>
@@ -1031,31 +1036,38 @@ function AdapterCard({
         </Button>
       </div>
 
-      <div className="flex h-5 w-fit items-center gap-2">
-        <Chip className="max-w-48" variant="soft">
+      <div className="flex flex-wrap items-center gap-2">
+        <Chip className="max-w-full" variant="soft">
           {labels.ipAddress}: {adapter.ipAddresses.length > 0 ? adapter.ipAddresses.join(', ') : '-'}
         </Chip>
       </div>
 
-      <div className="flex min-w-0 flex-col justify-between gap-0.5">
-        <p className="h-5 min-w-0 truncate text-sm font-medium leading-5 text-slate-950">
-          {labels.cableName}: <span className="font-mono text-sm font-normal text-slate-600">{adapter.connectionSpecificSuffix || '-'}</span>
-        </p>
-        <div className="flex h-5 flex-row items-center gap-2">
-          <span className="flex-none text-sm text-slate-600">{adapter.status ?? 'Unknown'}</span>
-          <Switch
-            aria-label={`${adapter.name} ${labels.status}`}
-            isSelected={isUp}
-            isDisabled={isPending || !adapter.status || adapter.status.toLowerCase() === 'unknown'}
-            onChange={selected => void onToggle(adapter.name, selected)}
-            size="sm"
-          >
-            <Switch.Control>
-              <Switch.Thumb />
-            </Switch.Control>
-            <Switch.Content className="text-sm text-slate-600">{isUp ? labels.enable : labels.disable}</Switch.Content>
-          </Switch>
+      <div className="grid min-w-0 gap-2">
+        <span className="text-xs font-medium uppercase tracking-wide text-slate-500">{labels.cableName}</span>
+        <span className="min-w-0 truncate font-mono text-sm text-slate-700">{adapter.connectionSpecificSuffix || '-'}</span>
+      </div>
+
+      <div className="mt-auto flex items-center justify-between gap-4 border-t border-slate-100 pt-4">
+        <div className="min-w-0">
+          <span className="block text-xs font-medium uppercase tracking-wide text-slate-500">{labels.status}</span>
+          <span className="flex min-w-0 items-center gap-2 text-sm font-medium text-slate-800">
+            <span className="truncate">{adapter.status ?? 'Unknown'}</span>
+            {isDisconnected ? <Spinner color="current" size="sm" /> : null}
+          </span>
         </div>
+
+        <Switch
+          aria-label={`${adapter.name} ${labels.status}`}
+          isSelected={isUp}
+          isDisabled={isPending || !adapter.status || adapter.status.toLowerCase() === 'unknown'}
+          onChange={selected => void onToggle(adapter.name, selected)}
+          size="sm"
+        >
+          <Switch.Control>
+            <Switch.Thumb />
+          </Switch.Control>
+          <Switch.Content className="text-sm text-slate-600">{isUp ? labels.enable : labels.disable}</Switch.Content>
+        </Switch>
       </div>
     </li>
   )
